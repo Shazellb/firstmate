@@ -35,10 +35,13 @@ NAMED_CLAUDE="$FAKEBIN/claude"
 # --- unit layer: identity behind a deterministic process table ---------------
 
 # Run one library expression with <fakebin> shadowing ps. kill is stubbed so
-# liveness questions are decided by the process table alone.
+# liveness questions are decided by the process table alone. Pinned to the
+# posix dispatch (FM_HARNESS_PLATFORM_OVERRIDE) so these POSIX comm/args
+# semantics are exercised the same way on every test host, including one that
+# is itself Windows - see fm_harness_platform_is_windows's own header comment.
 lib_eval() {  # <fakebin> <expression>
   local fakebin=$1 expr=$2
-  PATH="$fakebin:$PATH" bash -c "
+  PATH="$fakebin:$PATH" FM_HARNESS_PLATFORM_OVERRIDE=posix bash -c "
     . \"\$0\"
     kill() { return 0; }
     $expr
@@ -177,6 +180,137 @@ SH
   lib_eval "$fakebin" "fm_session_lock_owned_by_self '$dir/state'" \
     || fail "the contiguous harness run did not recognize its own lock"
   pass "session-lock: ownership stops at the first non-harness gap above the contiguous run"
+}
+
+# --- pi bare-interpreter regression -------------------------------------------
+# pi's own npm-installed launcher execs a bare node process
+# (`exec node .../pi-coding-agent/dist/cli.js "$@"`) without rewriting argv[0],
+# so neither the comm nor argv0 checks ever see "pi" - and FM_HARNESS_RE's
+# ^pi$/^pi-signed$ alternatives are anchored to the WHOLE args line specifically
+# so the short, generic word "pi" cannot false-positive inside unrelated args
+# (e.g. "pip", "piano", "spinner"), which means they can never match a real
+# invocation's full command line either. Platform-agnostic: this is a plain
+# fm_harness_process_matches call, no ps/ancestry involved, so it runs the same
+# on every host regardless of what fixed this repo's own CI.
+test_pi_bare_interpreter_matches_via_path_component() {
+  local dir fakebin
+  dir="$TMP_ROOT/pi-bare-interpreter"
+  fakebin=$(fm_fakebin "$dir")
+  mkdir -p "$dir/state"
+
+  lib_eval "$fakebin" \
+    "fm_harness_process_matches node '/usr/bin/node /home/u/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js -p hello'" \
+    || fail "a bare node process running pi-coding-agent's cli.js was not recognized as the pi harness"
+
+  lib_eval "$fakebin" \
+    "fm_harness_process_matches node '/usr/bin/node /opt/tools/pi/bin/cli.js --once'" \
+    || fail "a bare node process running an exact pi/ path component was not recognized"
+
+  lib_eval "$fakebin" \
+    "fm_harness_process_matches node '/usr/bin/node /opt/tools/pi-signed/bin/cli.js --once'" \
+    || fail "a bare node process running an exact pi-signed/ path component was not recognized"
+
+  # Still must not false-positive on ordinary words that merely start with "pi".
+  if lib_eval "$fakebin" \
+    "fm_harness_process_matches node '/usr/bin/node /opt/pipeline/dist/cli.js --once'"; then
+    fail "a bare node process running an unrelated 'pipeline' path was wrongly recognized as pi"
+  fi
+  if lib_eval "$fakebin" \
+    "fm_harness_process_matches node '/usr/bin/node /home/u/piano-tuner/dist/cli.js --once'"; then
+    fail "a bare node process running an unrelated 'piano-tuner' path was wrongly recognized as pi"
+  fi
+  pass "session-lock: a bare node process running pi's own launcher path is recognized as the pi harness"
+}
+
+# --- Windows (MSYS-family) ancestry -------------------------------------------
+# Same unit-layer approach as the POSIX cases above, but shadowing powershell.exe
+# and /proc/<pid>/winpid instead of ps, and pinning
+# FM_HARNESS_PLATFORM_OVERRIDE=windows instead of relying on the real host's
+# uname - fm-session-lock-lib.sh dispatches to a completely different code path
+# once fm_harness_platform_is_windows is true (see its own header comment for
+# why: MSYS's ps has no -o support at all, and MSYS reports every process's
+# ppid as 1). Runs on any host: none of this depends on a real Windows machine,
+# only on the fakes below and the override.
+win_lib_eval() {  # <fakebin> <proc-root> <expression>
+  local fakebin=$1 procroot=$2 expr=$3
+  PATH="$fakebin:$PATH" FM_PROC_OVERRIDE="$procroot" FM_HARNESS_PLATFORM_OVERRIDE=windows bash -c "
+    . \"\$0\"
+    $expr
+  " "$LIB"
+}
+
+# A fake powershell.exe standing in for fm-session-lock-win-ancestry.ps1: reads
+# -StartPid from argv and prints the pre-scripted chain for it from
+# FM_TEST_WIN_CHAIN_<pid>, one line already in the pid<TAB>ppid<TAB>image<TAB>args
+# shape the real .ps1 produces. Ignores -File entirely, so it works whether or
+# not the real script exists on this host.
+fake_powershell() {  # <fakebin>
+  local fakebin=$1
+  cat > "$fakebin/powershell.exe" <<'SH'
+#!/usr/bin/env bash
+set -u
+startpid=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -StartPid) startpid=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+var="FM_TEST_WIN_CHAIN_$startpid"
+eval "printf '%s\n' \"\${$var:-}\""
+SH
+  chmod +x "$fakebin/powershell.exe"
+}
+
+test_windows_claude_pid_fast_path_skips_the_walk() {
+  local dir fakebin procroot
+  dir="$TMP_ROOT/windows-claude-pid"
+  fakebin=$(fm_fakebin "$dir")
+  procroot="$dir/proc"
+  fake_powershell "$fakebin"
+
+  got=$(CLAUDECODE=1 CLAUDE_PID=37884 \
+    FM_TEST_WIN_CHAIN_37884=$'37884\t40456\tC:/npm/claude.exe\tC:/npm/claude.exe --agent claude' \
+    win_lib_eval "$fakebin" "$procroot" 'fm_harness_ancestry_pid') \
+    || fail "the CLAUDE_PID fast path did not resolve an ancestry pid"
+  [ "$got" = 37884 ] || fail "expected the CLAUDE_PID fast path to resolve 37884, got '$got'"
+  pass "session-lock windows: CLAUDE_PID is used directly, without walking Win32 ParentProcessId"
+}
+
+test_windows_walk_finds_pi_through_bare_node_hop() {
+  local dir fakebin procroot chain
+  dir="$TMP_ROOT/windows-pi-walk"
+  fakebin=$(fm_fakebin "$dir")
+  procroot="$dir/proc"
+  fake_powershell "$fakebin"
+  mkdir -p "$procroot/5001"
+  printf '11111\n' > "$procroot/5001/winpid"
+
+  # 11111 (bash) -> 22222 (bash) -> 33333 (node, pi-coding-agent in args): the
+  # real shape observed from a live `pi -p` run.
+  chain=$'11111\t22222\tC:/Git/usr/bin/bash.exe\t"C:/Git/usr/bin/bash.exe" -c "pi_probe.sh"\n22222\t33333\tC:/Git/usr/bin/bash.exe\t"C:/Git/usr/bin/bash.exe" -c "..."\n33333\t44444\tC:/Program Files/nodejs/node.exe\tC:/Program Files/nodejs/node.exe C:/npm/node_modules/@earendil-works/pi-coding-agent/dist/cli.js -p x'
+
+  # $$ is bash's own read-only pid, so the fixture can't just point it at
+  # 5001 - drive fm_harness_win_ancestry_chain and the same match/extend loop
+  # fm_harness_ancestry_pids_windows uses, directly against the seeded start pid.
+  got=$(FM_TEST_WIN_CHAIN_11111="$chain" \
+    win_lib_eval "$fakebin" "$procroot" '
+      pid=$(fm_harness_win_pid_of 5001)
+      chain=$(fm_harness_win_ancestry_chain "$pid")
+      extending=0
+      while IFS= read -r row; do
+        [ -n "$row" ] || continue
+        fm_harness_win_row_fields "$row"
+        if fm_harness_process_matches "$FM_HARNESS_WIN_COMM" "$FM_HARNESS_WIN_ARGS"; then
+          printf "%s\n" "$FM_HARNESS_WIN_PID"
+          break
+        fi
+      done <<EOF
+$chain
+EOF
+    ') || fail "the Windows walk did not resolve any pid for the pi chain"
+  [ "$got" = 33333 ] || fail "expected the walk to match pi's node.exe (33333), got '$got'"
+  pass "session-lock windows: the best-effort walk finds pi through a bare node.exe hop"
 }
 
 test_competing_version_named_session_is_seen_as_live() {
@@ -357,6 +491,9 @@ test_e2e_daemon_parented_version_named_session_keeps_its_lock() {
 test_version_named_session_is_identified_on_both_platforms
 test_ordinary_paths_are_never_harness_processes
 test_harness_beyond_a_gap_never_owns_the_lock
+test_pi_bare_interpreter_matches_via_path_component
+test_windows_claude_pid_fast_path_skips_the_walk
+test_windows_walk_finds_pi_through_bare_node_hop
 test_competing_version_named_session_is_seen_as_live
 test_e2e_version_named_session_claims_the_home
 test_e2e_daemon_parented_session_claims_the_home
