@@ -202,6 +202,25 @@ fm_lock_clean_known_files() {
     2>/dev/null || true
 }
 
+# True on MSYS-family Windows (Git Bash/MSYS2/Cygwin), where `ln -s` on a
+# directory needs a different real creation call - see fm_lock_ln_s's header
+# comment for why. FM_LOCK_PLATFORM_OVERRIDE (posix|windows) exists so tests
+# can pin this independently of the real host, the same reason
+# bin/fm-session-lock-lib.sh's own FM_HARNESS_PLATFORM_OVERRIDE exists (this
+# file does not source that one, to avoid a needless cross-file dependency
+# for one predicate - _FM_UNAME is already resolved once at source time
+# above).
+fm_lock_platform_is_windows() {
+  case "${FM_LOCK_PLATFORM_OVERRIDE:-}" in
+    windows) return 0 ;;
+    posix) return 1 ;;
+  esac
+  case "$_FM_UNAME" in
+    MINGW*|MSYS*|CYGWIN*) return 0 ;;
+  esac
+  return 1
+}
+
 fm_lock_set_role() {
   local lockdir=$1 role=$2 current pid back
   case "$role" in
@@ -242,6 +261,11 @@ fm_lock_prepare_owner() {
   [ "$back" = "$mypid" ]
 }
 
+# Which ownerdir $lockdir currently names, via readlink. Unchanged by the
+# Windows fix below: fm_lock_ln_s creates a real NTFS junction there instead
+# of a POSIX symlink, and Git Bash's `readlink` resolves a junction exactly
+# like a symlink - verified directly, including with a path containing a
+# space (this repo's own path does).
 fm_lock_link_owner() {
   local lockdir=$1 owner
   owner=$(readlink "$lockdir" 2>/dev/null) || return 1
@@ -309,6 +333,35 @@ fm_lock_claim() {
   return 0
 }
 
+# Atomically create $lockdir as a link to $ownerdir - `ln -s` on POSIX. On
+# Windows/MSYS, `ln -s` for a DIRECTORY target, without Developer Mode
+# enabled, silently falls back to an NTFS junction that `readlink` cannot
+# read at all - verified directly (`ln -s` reports success, `readlink` then
+# fails, `ls` shows a plain empty directory). Every claim would look
+# unverifiable forever, so fm_lock_try_create could never succeed and
+# fm_lock_acquire_wait would retry forever - this is the actual mechanism
+# behind the write-blocked/read-only-forever symptom on a default Windows
+# install (Developer Mode off, which is the out-of-the-box state).
+#
+# `mklink /J` (a real NTFS junction, via cmd.exe - not Git Bash's own `ln -s`
+# fallback, which is what produces the unreadable case above) needs no
+# privilege and no Developer Mode, and - unlike a plain symlink attempt -
+# Git Bash's `readlink`/`-L` DO resolve a junction correctly. Verified
+# directly, including with a path containing a space (this repo's own path
+# does): `readlink` on the junction returns exactly the same MSYS-form path
+# `mktemp -d` produced for $ownerdir, so fm_lock_points_to_owner and every
+# other reader in this file that already assumes a working symlink - and
+# every existing "$lockdir/pid"-style transparent read - needs no other
+# change at all.
+fm_lock_ln_s() {  # <target> <linkname>
+  local target=$1 linkname=$2
+  if fm_lock_platform_is_windows; then
+    MSYS_NO_PATHCONV=1 cmd.exe /c mklink /J "$(cygpath -w "$linkname")" "$(cygpath -w "$target")" >/dev/null 2>&1
+    return
+  fi
+  ln -s "$target" "$linkname" 2>/dev/null
+}
+
 fm_lock_try_create() {
   local lockdir=$1 allowed_steal_owner=${2:-} ownerdir
   FM_LOCK_OWNER_DIR=
@@ -321,7 +374,7 @@ fm_lock_try_create() {
     fm_lock_discard_owner "$ownerdir"
     return 1
   fi
-  if ln -s "$ownerdir" "$lockdir" 2>/dev/null && fm_lock_points_to_owner "$lockdir" "$ownerdir"; then
+  if fm_lock_ln_s "$ownerdir" "$lockdir" && fm_lock_points_to_owner "$lockdir" "$ownerdir"; then
     if fm_lock_claim "$lockdir" "$ownerdir" "$allowed_steal_owner"; then
       FM_LOCK_OWNER_DIR=$ownerdir
       return 0
