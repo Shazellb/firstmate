@@ -1,0 +1,11 @@
+== new case test_ambient_tasks_axi_env_never_reaches_a_real_backlog with tests/lib.sh from base 9074f9d (no unset) ==
+(base lib.sh contains 'unset TASKS_AXI_FILE': 0)
+TASKS_AXI_FILE survived tests/lib.sh
+not ok - seeding under an ambient tasks-axi override did not reach the fixture backlog
+exit=1
+
+== same case with tests/lib.sh from target a49c94c ==
+(target lib.sh contains 'unset TASKS_AXI_FILE': 1)
+ok - the suite's seeding never reaches a backlog named by ambient TASKS_AXI_FILE/BACKEND
+# subset done
+exit=0

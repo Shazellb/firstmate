@@ -1,0 +1,182 @@
+== layout: code root /tmp/nm-e2e.K5C0xB/code (tracked .tasks.toml), operational home /tmp/nm-e2e.K5C0xB/home ==
+tasks-axi 0.2.4
+
+$ ls -l code/data/backlog.md   # operator linked the code-root backlog into the home
+lrwxrwxrwx 1 shaz shaz 39 Sep 11 15:17 <tmp>/code/data/backlog.md -> <tmp>/home/data/backlog.md
+
+$ bootstrap guard with the link intact
+(no BACKLOG_RECONCILE: code-root line)
+
+== 1. root cause: bare tasks-axi from the code root replaces the link ==
+
+$ (cd code && tasks-axi add lost-1 'written from the code root')
+ok: added lost-1 -> Queued
+task:
+  id: lost-1
+  title: written from the code root
+  state: queued
+  blocked: no
+  blocked_by: none
+  held: no
+  hold_reason: "-"
+  hold_kind: "-"
+  hold_until: "-"
+  kind: task
+  repo: "-"
+  priority: "-"
+  created: 2026-09-11
+  closed: "-"
+  deps: none
+  links: none
+  body: ""
+help[2]:
+  - Run `tasks-axi start lost-1` to move it to in flight
+  - Run `tasks-axi block lost-1 --by <other>` to record a dependency
+
+$ ls -l code/data/backlog.md
+-rw-rw-r-- 1 shaz shaz 94 Sep 11 15:17 <tmp>/code/data/backlog.md
+
+$ grep -c lost-1 home/data/backlog.md  (row reached the home?)
+0
+
+$ grep -c lost-1 code/data/backlog.md  (row stuck in the code root?)
+1
+
+$ bin/fm-bootstrap.sh (FM_HOME=home, detect-only)   # the new guard
+BACKLOG_RECONCILE: code-root <tmp>/code/data/backlog.md is not this home's <tmp>/home/data/backlog.md; tasks-axi wrote the code root instead of this home, so rows in it may be missing here - merge it into this home's copy and move it aside
+
+== 2. operator restores the link; firstmate now goes through bin/fm-tasks-axi.sh ==
+
+$ (cd code && FM_HOME=home bin/fm-tasks-axi.sh add kept-1 'written through the wrapper')
+ok: added kept-1 -> Queued
+task:
+  id: kept-1
+  title: written through the wrapper
+  state: queued
+  blocked: no
+  blocked_by: none
+  held: no
+  hold_reason: "-"
+  hold_kind: "-"
+  hold_until: "-"
+  kind: task
+  repo: "-"
+  priority: "-"
+  created: 2026-09-11
+  closed: "-"
+  deps: none
+  links: none
+  body: ""
+help[2]:
+  - Run `tasks-axi start kept-1` to move it to in flight
+  - Run `tasks-axi block kept-1 --by <other>` to record a dependency
+
+$ ls -l code/data/backlog.md   # link survives
+lrwxrwxrwx 1 shaz shaz 39 Sep 11 15:17 <tmp>/code/data/backlog.md -> <tmp>/home/data/backlog.md
+
+$ grep kept-1 home/data/backlog.md
+- [ ] kept-1 - written through the wrapper (since 2026-09-11)
+
+$ bootstrap guard after the wrapper write
+(no BACKLOG_RECONCILE: code-root line)
+
+== 3. wrapper resolves a relative --body-file against the caller's cwd and reaches the home ==
+
+$ (cd code && bin/fm-tasks-axi.sh add kept-2 'with body' --body-file notes/body.md)
+ok: added kept-2 -> Queued
+task:
+  id: kept-2
+  title: with body
+  state: queued
+  blocked: no
+  blocked_by: none
+  held: no
+  hold_reason: "-"
+  hold_kind: "-"
+  hold_until: "-"
+  kind: task
+  repo: "-"
+  priority: "-"
+  created: 2026-09-11
+  closed: "-"
+  deps: none
+  links: none
+  body: "body from a relative path\n"
+help[2]:
+  - Run `tasks-axi start kept-2` to move it to in flight
+  - Run `tasks-axi block kept-2 --by <other>` to record a dependency
+
+$ bin/fm-tasks-axi.sh show kept-2 --full
+task:
+  id: kept-2
+  title: with body
+  state: queued
+  blocked: no
+  blocked_by: none
+  held: no
+  hold_reason: "-"
+  hold_kind: "-"
+  hold_until: "-"
+  kind: task
+  repo: "-"
+  priority: "-"
+  created: 2026-09-11
+  closed: "-"
+  deps: none
+  links: none
+  body: body from a relative path
+
+== 4. an ambient TASKS_AXI_FILE cannot divert the wrapper; the no-command dashboard works ==
+
+$ TASKS_AXI_FILE=<tmp>/decoy/backlog.md bin/fm-tasks-axi.sh ready
+count: 2
+ready[2]{id,state,kind,repo,title}:
+  kept-1,queued,task,"-",written through the wrapper
+  kept-2,queued,task,"-",with body
+ready_public_followups: 0 delivery-ready obligations
+help[1]:
+  - Run `tasks-axi start <id>` to dispatch one of these
+
+$ TASKS_AXI_FILE=<tmp>/decoy/backlog.md bin/fm-tasks-axi.sh   (dashboard, first 12 lines)
+bin: /tmp/nm-tasks-axi-prefix/node_modules/.bin/tasks-axi
+description: "Agent ergonomic task & backlog manager for the current workspace. Prefer this over hand-editing backlog.md for task state, dependency, or hold changes."
+in_flight: 0 tasks
+summary:
+  queued: 2
+  ready: 2
+queued[2]{id,title,kind,blocked_by}:
+  kept-1,written through the wrapper,task,none
+  kept-2,with body,task,none
+public_followups: 0 obligations
+done: 0 retained
+help[3]:
+
+== 5. refusals ==
+
+$ bin/fm-tasks-axi.sh ready --file other.md
+fm-tasks-axi: this command always addresses this home's backlog at /tmp/nm-e2e.K5C0xB/home/data; drop --file, or run tasks-axi directly for another backlog
+exit=2
+
+$ FM_HOME=<tmp>/nowhere bin/fm-tasks-axi.sh ready
+fm-tasks-axi: data directory cannot be resolved: <tmp>/nowhere/data
+exit=2
+
+$ FM_HOME=<tmp>/linked-home (its backlog.md is a symlink) bin/fm-tasks-axi.sh add x 'y'
+fm-tasks-axi: <tmp>/linked-home/data/backlog.md is a symlink; a tasks-axi write would replace it with a regular file and fork the backlog - make it this home's real file
+exit=2
+
+== 6. guard stays silent when the code root IS the home (single-home layout) ==
+
+$ FM_HOME=code bin/fm-bootstrap.sh
+(no BACKLOG_RECONCILE: code-root line)
+
+$ final home backlog
+## In flight
+
+## Queued
+- [ ] kept-1 - written through the wrapper (since 2026-09-11)
+
+- [ ] kept-2 - with body (since 2026-09-11)
+  body from a relative path
+
+## Done

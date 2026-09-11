@@ -1,0 +1,3 @@
+ok - teardown closes its own backlog item before reporting success
+# subset done
+exit=0

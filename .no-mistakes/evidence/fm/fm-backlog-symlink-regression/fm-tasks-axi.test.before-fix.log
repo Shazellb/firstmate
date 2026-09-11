@@ -1,0 +1,4 @@
+not ok - a regular code-root backlog beside a separate home was not reported (missing: 'BACKLOG_RECONCILE: code-root /tmp/fm-tasks-axi.fAng0O/guard-regular/code/data/backlog.md is not this home's /tmp/fm-tasks-axi.fAng0O/guard-regular/home/data/backlog.md')
+--- output ---
+
+exit=1
