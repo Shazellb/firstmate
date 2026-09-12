@@ -1,0 +1,16 @@
+$ bash tests/fm-tasks-axi.test.sh   (target 8d5109e, tasks-axi 0.2.4)
+ok - bootstrap reports a regular code-root backlog and stays silent for a link into the home or no copy
+ok - bootstrap reports a code-root backlog linked elsewhere and a forked archive
+ok - bootstrap stays silent when the code root is the home
+ok - bare tasks-axi replaced the code-root link and bootstrap reported the fork
+ok - fm-tasks-axi.sh writes, holds, archives, and reads relative body files through to the home from the code root
+ok - fm-tasks-axi.sh pins the home's backlog over an ambient TASKS_AXI_FILE and serves the dashboard
+ok - fm-tasks-axi.sh refuses caller --file, a symlinked home backlog, and an unresolvable home
+ok - fm-tasks-axi.sh keeps the single-home layout addressing its own code-root backlog
+exit=0
+
+$ bash tests/fm-tasks-axi.test.sh   (same suite against base ad14a8d)
+not ok - a regular code-root backlog beside a separate home was not reported (missing: 'BACKLOG_RECONCILE: code-root <tmp>/guard-regular/code/data/backlog.md is not this home's <tmp>/guard-regular/home/data/backlog.md')
+--- output ---
+
+exit=1

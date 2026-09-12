@@ -1,0 +1,120 @@
+=== Layout: FM_HOME=/tmp/fm-symlink-repro.NsWzI4/home, code root=/tmp/fm-symlink-repro.NsWzI4/base (base commit ad14a8d), tasks-axi 0.2.4
+Operator links the code-root backlog into the home:
+lrwxrwxrwx 1 shaz shaz 49 Sep 11 19:45 <lab>/base/data/backlog.md -> <lab>/home/data/backlog.md
+
+=== BEFORE (base commit): bare tasks-axi add from the code root, the way AGENTS.md documented it
+ok: added stray-1 -> Queued
+task:
+  id: stray-1
+  title: written from the code root
+  state: queued
+  blocked: no
+  blocked_by: none
+  held: no
+  hold_reason: "-"
+  hold_kind: "-"
+  hold_until: "-"
+  kind: task
+  repo: "-"
+  priority: "-"
+  created: 2026-09-11
+  closed: "-"
+  deps: none
+  links: none
+  body: ""
+help[2]:
+  - Run `tasks-axi start stray-1` to move it to in flight
+  - Run `tasks-axi block stray-1 --by <other>` to record a dependency
+code-root data/backlog.md after the write:
+-rw-rw-r-- 1 shaz shaz 94 Sep 11 19:45 <lab>/base/data/backlog.md
+home backlog contains stray-1?  0  (0 = the row forked into the code root)
+code-root backlog contains stray-1?  1
+base-commit bootstrap output mentioning the fork:
+  (nothing - the fork went undetected)
+
+=== AFTER (target commit 8d5109e): same forked layout, target bootstrap at session start
+BACKLOG_RECONCILE: code-root <lab>/base/data/backlog.md is not this home's <lab>/home/data/backlog.md; tasks-axi wrote the code root instead of this home, so rows in it may be missing here - merge it into this home's copy and move it aside
+
+=== AFTER: bin/fm-tasks-axi.sh from the code root with the link restored
+$ bin/fm-tasks-axi.sh add ship-1 'ship it'   (cwd=code root)
+ok: added ship-1 -> Queued
+task:
+  id: ship-1
+  title: ship it
+  state: queued
+  blocked: no
+  blocked_by: none
+  held: no
+  hold_reason: "-"
+  hold_kind: "-"
+  hold_until: "-"
+  kind: task
+  repo: "-"
+  priority: "-"
+  created: 2026-09-11
+  closed: "-"
+  deps: none
+  links: none
+  body: ""
+help[2]:
+  - Run `tasks-axi start ship-1` to move it to in flight
+  - Run `tasks-axi block ship-1 --by <other>` to record a dependency
+$ bin/fm-tasks-axi.sh start ship-1   (cwd=code root)
+ok: start ship-1 -> In flight
+help[1]:
+  - Run `tasks-axi done ship-1 --pr <url>` when it ships
+$ bin/fm-tasks-axi.sh hold ship-1 --reason 'captain call' --kind captain   (cwd=code root)
+ok: hold ship-1 -> held (captain)
+task:
+  id: ship-1
+  title: ship it
+  state: in_flight
+  blocked: no
+  blocked_by: none
+  held: yes
+  hold_reason: captain call
+  hold_kind: captain
+  hold_until: "-"
+  kind: task
+  repo: "-"
+  priority: "-"
+  created: 2026-09-11
+  closed: "-"
+  deps: none
+  links: none
+  body: ""
+help[2]:
+  - Run `tasks-axi unhold ship-1` to resume dispatch
+  - Run `tasks-axi ready --include-held` to review paused work
+$ bin/fm-tasks-axi.sh done ship-1   (cwd=code root)
+ok: done ship-1 -> Done
+help[1]:
+  - Run `tasks-axi ready` to dispatch work unblocked by this
+code-root data/backlog.md after the writes (still the link):
+lrwxrwxrwx 1 shaz shaz 49 Sep 11 19:45 <lab>/base/data/backlog.md -> <lab>/home/data/backlog.md
+home backlog contains ship-1?  1
+--- $FM_HOME/data/backlog.md ---
+## In flight
+## Queued
+## Done
+- [x] ship-1 - ship it (done 2026-09-11) (hold: captain call) (hold-kind: captain)
+--- no-command dashboard through the wrapper ---
+bin: /tmp/fm-tasks-axi-tool/node_modules/.bin/tasks-axi
+description: "Agent ergonomic task & backlog manager for the current workspace. Prefer this over hand-editing backlog.md for task state, dependency, or hold changes."
+in_flight: 0 tasks
+queued: 0 tasks
+public_followups: 0 obligations
+done: 1 retained
+help[3]:
+  - Run `tasks-axi list` for the full backlog
+  - Run `tasks-axi ready` to see unblocked queued work
+  - "Run `tasks-axi add <id> \"<title>\" --start` to add and start a task"
+
+=== AFTER: refusals (exit codes)
+fm-tasks-axi: this command always addresses this home's backlog at <lab>/home/data; drop --file, or run tasks-axi directly for another backlog
+exit=2
+fm-tasks-axi: data directory cannot be resolved: <lab>/nope/data
+exit=2
+
+=== AFTER: bootstrap silent once the link is into the home
+  (no BACKLOG_RECONCILE: code-root line)

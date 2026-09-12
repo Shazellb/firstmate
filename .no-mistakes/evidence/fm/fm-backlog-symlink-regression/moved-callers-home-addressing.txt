@@ -1,0 +1,42 @@
+=== fm-decision-hold.sh (moved onto bin/fm-tasks-axi.sh) run from the CODE ROOT while FM_HOME lives elsewhere
+FM_HOME=<lab>/home   cwd=<lab>/code   code-root data/backlog.md -> home/data/backlog.md (symlink)
+
+--- seed through the wrapper
+ok: orig-decision-k1 held for the captain
+ok: dep-1 blocked by orig-decision-k1
+
+--- $ bin/fm-decision-hold.sh resolve orig k1 --decision-file decision.txt --routed-to dep-1
+answered: orig-decision-k1
+resolved: orig-decision-k1 -> dep-1
+exit=0
+
+--- resulting state
+code-root data/backlog.md still a symlink into the home: yes
+stray code-root regular files under code/data: 0
+--- $FM_HOME/data/backlog.md:
+## In flight
+
+## Queued
+- [ ] dep-1 - blocked work blocked-by: orig-decision-k1 (since 2026-09-11)
+## Done
+- [x] orig-decision-k1 - decide k1 (kind: decision) (done 2026-09-11) (hold: needs the captain) (hold-kind: captain)
+  Resolution recorded by fm-captain-hold.
+  Decision digest: ff89ab2b1679e5028c99be11598c96f69d02e326b6e4bd05e7527179ae3c0c5d
+  Resolution mode: answered
+
+  Captain decision:
+  Captain says: proceed with dep-1.
+
+
+  Routed work:
+  - dep-1
+
+--- bin/fm-tasks-axi.sh show dep-1 (from the code root):
+  title: blocked work
+  state: queued
+  blocked: no
+  blocked_by: none
+  deps: "blocked-by:orig-decision-k1"
+
+--- bootstrap guard after all of the above:
+  (no BACKLOG_RECONCILE: code-root line - nothing forked)
