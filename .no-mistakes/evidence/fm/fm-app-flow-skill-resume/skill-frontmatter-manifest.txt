@@ -1,0 +1,13 @@
+skills/app-flow-walkthrough/SKILL.md (parser=pyyaml)
+  PASS  name matches directory
+  PASS  description present
+  PASS  user-invocable
+  PASS  not hidden from installers (no metadata.internal)
+  description[:90]='Build a single self-contained HTML walkthrough that explains an application to a non-user '
+skills/stow/SKILL.md (parser=pyyaml)
+  PASS  name matches directory
+  PASS  description present
+  PASS  user-invocable
+  PASS  not hidden from installers (no metadata.internal)
+  description[:90]='Sweep the current conversation for durable knowledge - user preferences, project facts, op'
+RESULT: ok
