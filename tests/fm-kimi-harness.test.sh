@@ -41,6 +41,12 @@ fake_screen() {
     ready)
       printf 'Welcome to Kimi Code!\ncontext: 0%% (0/256k)\n╭────────────────────────────────╮\n│ >                              │\n╰────────────────────────────────╯\n'
       ;;
+    trust)
+      printf '╭─ Trust this folder? ─╮\n│ ↑↓ navigate · Enter select · Esc exit │\n│ %s │\n│ ❯ Trust this folder │\n│   Don'"'"'t trust │\n╰──────────────────────────────╯\n' "$FM_FAKE_PANE_PATH"
+      ;;
+    trust-decoy)
+      printf 'Trust this folder?\n%s\n❯ Trust this folder\nDon'"'"'t trust\n' "$FM_FAKE_PANE_PATH"
+      ;;
     pointer-typed)
       printf 'context: 0%% (0/256k)\n╭────────────────────────────────╮\n│ > Read the brief and follow it │\n│                                │\n╰────────────────────────────────╯\n'
       ;;
@@ -92,6 +98,16 @@ case "${1:-}" in
         case "$state" in
           launched)
             if [ "${FM_FAKE_KIMI_READY:-yes}" = yes ]; then
+              case "${FM_FAKE_KIMI_TRUST:-remembered}" in
+                fresh) printf 'trust\n' > "$FM_FAKE_KIMI_STATE" ;;
+                decoy) printf 'trust-decoy\n' > "$FM_FAKE_KIMI_STATE" ;;
+                *) printf 'ready\n' > "$FM_FAKE_KIMI_STATE" ;;
+              esac
+            fi
+            ;;
+          trust)
+            printf 'enter\n' >> "$FM_FAKE_KIMI_TRUST_ENTER_LOG"
+            if [ "${FM_FAKE_KIMI_TRUST_CLEARS:-yes}" = yes ]; then
               printf 'ready\n' > "$FM_FAKE_KIMI_STATE"
             fi
             ;;
@@ -161,6 +177,7 @@ EOF
   : > "$case_dir/launch.log"
   : > "$case_dir/pointer.log"
   : > "$case_dir/kimi.state"
+  : > "$case_dir/trust-enter.log"
   : > "$case_dir/tmux-calls.log"
   printf '%s\n' "$case_dir|$home|$proj|$wt|$fakebin"
 }
@@ -175,6 +192,9 @@ run_spawn() {
     FM_FAKE_LAUNCH_LOG="$case_dir/launch.log" \
     FM_FAKE_POINTER_LOG="$case_dir/pointer.log" \
     FM_FAKE_KIMI_STATE="$case_dir/kimi.state" \
+    FM_FAKE_KIMI_TRUST_ENTER_LOG="$case_dir/trust-enter.log" \
+    FM_FAKE_KIMI_TRUST="${FM_FAKE_KIMI_TRUST:-remembered}" \
+    FM_FAKE_KIMI_TRUST_CLEARS="${FM_FAKE_KIMI_TRUST_CLEARS:-yes}" \
     FM_FAKE_KIMI_SWALLOWED="$case_dir/kimi.swallowed" \
     FM_FAKE_KIMI_SWALLOW_FIRST="${FM_FAKE_KIMI_SWALLOW_FIRST:-no}" \
     FM_FAKE_TMUX_CALL_LOG="$case_dir/tmux-calls.log" \
@@ -522,6 +542,62 @@ test_kimi_readiness_gate_precedes_pointer() {
   pass "fm-spawn: kimi never sends the brief pointer before an observable ready signal"
 }
 
+test_kimi_fresh_worktree_trust_is_answered_and_verified() {
+  local id rec out rc
+  id=kimi-trust-z9
+  rec=$(make_spawn_case trust "$id")
+  read_spawn_record "$rec"
+  rc=0
+  out=$(FM_FAKE_KIMI_TRUST=fresh run_spawn \
+    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id") || rc=$?
+  expect_code 0 "$rc" "fresh Kimi trust dialog should advance into verified delivery"
+  assert_contains "$out" "spawned $id harness=kimi" \
+    "Kimi spawn did not continue after the trust dialog cleared"
+  [ "$(wc -l < "$CASE_DIR/trust-enter.log" | tr -d ' ')" = 1 ] \
+    || fail "Kimi trust dialog was not answered exactly once"
+  assert_grep "Read the brief at " "$CASE_DIR/pointer.log" \
+    "Kimi brief pointer was not delivered after trust and readiness verification"
+  pass "fm-spawn: a fresh Kimi worktree answers the exact trust dialog once and verifies advancement"
+}
+
+test_kimi_stuck_trust_dialog_fails_before_delivery() {
+  local id rec out rc
+  id=kimi-trust-stuck-y1
+  rec=$(make_spawn_case trust-stuck "$id")
+  read_spawn_record "$rec"
+  rc=0
+  out=$(FM_FAKE_KIMI_TRUST=fresh FM_FAKE_KIMI_TRUST_CLEARS=no run_spawn \
+    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id") || rc=$?
+  [ "$rc" -ne 0 ] || fail "a Kimi trust dialog that never clears should fail"
+  assert_contains "$out" "kimi trust dialog did not clear after selecting 'Trust this folder'" \
+    "stuck Kimi trust dialog lacked its concrete failure reason"
+  assert_contains "$out" "navigation hint, selected 'Trust this folder'" \
+    "stuck Kimi trust diagnostic did not name the observed dialog signals"
+  [ "$(wc -l < "$CASE_DIR/trust-enter.log" | tr -d ' ')" = 1 ] \
+    || fail "stuck Kimi trust dialog received more than one affirmative keypress"
+  [ ! -s "$CASE_DIR/pointer.log" ] || fail "Kimi pointer was sent through a stuck trust dialog"
+  assert_grep 'failed: kimi trust dialog did not clear' "$HOME_DIR/state/$id.status" \
+    "stuck Kimi trust dialog did not leave a supervisor-visible failure"
+  pass "fm-spawn: a Kimi trust dialog must visibly clear before brief delivery"
+}
+
+test_kimi_trust_detection_requires_the_complete_dialog() {
+  local id rec out rc
+  id=kimi-trust-decoy-y2
+  rec=$(make_spawn_case trust-decoy "$id")
+  read_spawn_record "$rec"
+  rc=0
+  out=$(FM_FAKE_KIMI_TRUST=decoy run_spawn \
+    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id") || rc=$?
+  [ "$rc" -ne 0 ] || fail "an incomplete Kimi trust lookalike should not pass readiness"
+  assert_contains "$out" "kimi did not show a verified ready signal" \
+    "incomplete Kimi trust lookalike did not retain the ordinary readiness failure"
+  [ ! -s "$CASE_DIR/trust-enter.log" ] \
+    || fail "Kimi trust detection answered output missing the exact navigation hint"
+  [ ! -s "$CASE_DIR/pointer.log" ] || fail "Kimi pointer was sent through a trust lookalike"
+  pass "fm-spawn: Kimi trust detection requires every observed dialog signal"
+}
+
 test_kimi_detection_uses_ancestry_after_markers() {
   local dir fakebin cfg out
   dir="$TMP_ROOT/detection"
@@ -693,6 +769,9 @@ test_kimi_falls_back_to_expanded_home_binary
 test_kimi_missing_binary_refuses_before_pane_creation
 test_kimi_unconfirmed_delivery_fails_loudly
 test_kimi_readiness_gate_precedes_pointer
+test_kimi_fresh_worktree_trust_is_answered_and_verified
+test_kimi_stuck_trust_dialog_fails_before_delivery
+test_kimi_trust_detection_requires_the_complete_dialog
 test_kimi_detection_uses_ancestry_after_markers
 test_kimi_session_lock_identity
 test_kimi_busy_signature_is_scoped_to_spinner_lines

@@ -287,6 +287,10 @@
 # Verified per-harness turn-end hooks are installed automatically where enabled; some live outside the worktree.
 # Kimi uses one surgically installed Firstmate region in $HOME/.kimi-code/config.toml,
 # a firstmate-owned global hook and registry, and a gitignored per-task pointer.
+# Kimi 2.0.0 also gates a fresh worktree on an interactive folder-trust dialog.
+# Its launch-readiness loop recognizes the complete dialog, selects the already
+# highlighted affirmative option once, and requires a later pane capture to show
+# that the dialog cleared before the ordinary readiness gates can pass.
 # grok uses a firstmate-owned global hook under ${GROK_HOME:-$HOME/.grok}/hooks
 # plus a gitignored .fm-grok-turnend worktree pointer and a state token.
 # muse installs no hook at all - its plugin engine is off in the default build - so
@@ -2246,10 +2250,11 @@ effort_flag_for_harness() {
     # opencode's interactive `opencode --prompt` launch has a verified --model
     # flag but no verified effort flag. Its `opencode run --variant` flag belongs
     # to a different, non-interactive launch mode, so fm-spawn does not pass it.
-    # kimi likewise has no reasoning-effort flag; the requested axis stays in
-    # task metadata but never reaches the launch command. Cursor encodes effort
-    # in model ids such as cursor-grok-4.5-high, so it also receives no separate
-    # effort flag.
+    # kimi provider catalogs expose supported and default effort values, but a
+    # launch flag and mapping have not been live-verified; the requested axis
+    # stays in task metadata but never reaches the launch command. Cursor encodes
+    # effort in model ids such as cursor-grok-4.5-high, so it also receives no
+    # separate effort flag.
   esac
 }
 
@@ -3268,17 +3273,48 @@ kimi_composer_is_empty() {
   [ "$(fm_backend_composer_state "$BACKEND" "$T" "$W" 2>/dev/null)" = empty ]
 }
 
+kimi_trust_dialog_is_visible() { # <plain-pane-capture>
+  local pane=$1
+  printf '%s\n' "$pane" | grep -Fq 'Trust this folder?' &&
+    printf '%s\n' "$pane" | grep -Fq '↑↓ navigate · Enter select · Esc exit' &&
+    printf '%s\n' "$pane" | grep -Fq '❯ Trust this folder' &&
+    printf '%s\n' "$pane" | grep -Fq "Don't trust"
+}
+
 kimi_wait_for_ready() {
   local pane i=0 max=${FM_KIMI_READY_POLLS:-60} interval=${FM_KIMI_POLL_INTERVAL:-0.5}
+  local trust_answered=0 trust_seen=0 trust_still_visible=0
+  KIMI_READY_FAILURE_DETAIL='kimi did not show a verified ready signal before brief delivery'
   while [ "$i" -lt "$max" ]; do
     pane=$(kimi_capture)
-    if printf '%s\n' "$pane" | grep -Fq 'Welcome to Kimi Code!' ||
-      kimi_composer_is_empty; then
-      return 0
+    if kimi_trust_dialog_is_visible "$pane"; then
+      trust_seen=1
+      trust_still_visible=1
+      if [ "$trust_answered" -eq 0 ]; then
+        if ! spawn_send_key "$T" Enter; then
+          KIMI_READY_FAILURE_DETAIL="kimi trust dialog was seen but the affirmative selection could not be submitted"
+          return 1
+        fi
+        trust_answered=1
+      fi
+    else
+      trust_still_visible=0
+      # A successful key send is not evidence that Kimi accepted trust. Only
+      # the ordinary readiness signals in a later capture prove advancement.
+      if printf '%s\n' "$pane" | grep -Fq 'Welcome to Kimi Code!' ||
+        kimi_composer_is_empty
+      then
+        return 0
+      fi
     fi
     i=$((i + 1))
     [ "$i" -ge "$max" ] || sleep "$interval"
   done
+  if [ "$trust_still_visible" -eq 1 ]; then
+    KIMI_READY_FAILURE_DETAIL="kimi trust dialog did not clear after selecting 'Trust this folder'; saw 'Trust this folder?', the navigation hint, selected 'Trust this folder', and the negative Don't trust option"
+  elif [ "$trust_seen" -eq 1 ]; then
+    KIMI_READY_FAILURE_DETAIL="kimi trust dialog was answered but the pane never advanced to a verified ready signal; saw 'Trust this folder?', the navigation hint, selected 'Trust this folder', and the negative Don't trust option"
+  fi
   return 1
 }
 
@@ -4393,7 +4429,7 @@ fi
 spawn_send_key "$T" Enter
 if [ "$HARNESS" = kimi ]; then
   if ! kimi_wait_for_ready; then
-    kimi_spawn_fail "kimi did not show a verified ready signal before brief delivery"
+    kimi_spawn_fail "$KIMI_READY_FAILURE_DETAIL"
     exit 1
   fi
   KIMI_POINTER="Read the brief at $BRIEF_REAL and follow it exactly."
