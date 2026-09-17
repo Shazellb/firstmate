@@ -288,9 +288,11 @@
 # Kimi uses one surgically installed Firstmate region in $HOME/.kimi-code/config.toml,
 # a firstmate-owned global hook and registry, and a gitignored per-task pointer.
 # Kimi 2.0.0 also gates a fresh worktree on an interactive folder-trust dialog.
-# Its launch-readiness loop recognizes the complete dialog, selects the already
-# highlighted affirmative option once, and requires a later pane capture to show
-# that the dialog cleared before the ordinary readiness gates can pass.
+# Its launch-readiness loop recognizes the complete dialog, re-selects the
+# already highlighted affirmative option on every poll the complete dialog is
+# still on screen, refuses any ready verdict while unanswered dialog text is on
+# the pane, and requires two consecutive captures free of it before the ordinary
+# readiness gates can pass.
 # grok uses a firstmate-owned global hook under ${GROK_HOME:-$HOME/.grok}/hooks
 # plus a gitignored .fm-grok-turnend worktree pointer and a state token.
 # muse installs no hook at all - its plugin engine is off in the default build - so
@@ -3281,21 +3283,31 @@ kimi_trust_dialog_is_visible() { # <plain-pane-capture>
     printf '%s\n' "$pane" | grep -Fq "Don't trust"
 }
 
-# The complete dialog above decides whether to press Enter; these two markers
-# decide whether the pane is safe to call ready. A capture caught mid-redraw,
-# or in a pane too narrow to render the navigation hint on one row, fails the
-# complete-dialog test while the dialog is still up and waiting, and Kimi's
-# startup banner sits above it in that same capture. Treating such a pane as
-# ready would type the brief pointer into the dialog and lose it.
-kimi_trust_dialog_markers_present() { # <plain-pane-capture>
+# The complete dialog above decides whether to press Enter. Any single marker
+# of it decides whether the pane is safe to call ready: a capture caught
+# mid-redraw, one taken in a pane too narrow to render the navigation hint on
+# one row, and one that has painted only the dialog's box title all fail the
+# complete-dialog test while the dialog is still up and waiting, with Kimi's
+# startup banner sitting above it in that same capture. Treating such a pane as
+# ready would type the brief pointer into the dialog and lose it. Once the
+# dialog has been answered in this launch, dialog text left behind in scrollback
+# is expected and no longer withholds the verdict.
+kimi_trust_marker_is_present() { # <plain-pane-capture>
   local pane=$1
-  printf '%s\n' "$pane" | grep -Fq 'Trust this folder?' &&
+  printf '%s\n' "$pane" | grep -Fq 'Trust this folder' ||
     printf '%s\n' "$pane" | grep -Fq "Don't trust"
+}
+
+# A successful key send is not evidence that Kimi accepted trust. Only the
+# ordinary readiness signals in a later capture prove advancement.
+kimi_ready_signal_is_present() { # <plain-pane-capture>
+  printf '%s\n' "$1" | grep -Fq 'Welcome to Kimi Code!' || kimi_composer_is_empty
 }
 
 kimi_wait_for_ready() {
   local pane i=0 max=${FM_KIMI_READY_POLLS:-60} interval=${FM_KIMI_POLL_INTERVAL:-0.5}
   local trust_enters=0 trust_seen=0 trust_still_visible=0 trust_markers_pending=0
+  local dialog_free_captures=0
   KIMI_READY_FAILURE_DETAIL='kimi did not show a verified ready signal before brief delivery'
   while [ "$i" -lt "$max" ]; do
     pane=$(kimi_capture)
@@ -3303,6 +3315,7 @@ kimi_wait_for_ready() {
       trust_seen=1
       trust_still_visible=1
       trust_markers_pending=0
+      dialog_free_captures=0
       # Kimi swallows keypresses during its startup window - the same hazard
       # FM_KIMI_SUBMIT_RETRIES covers for the brief pointer - so the
       # affirmative selection is re-sent on every poll the complete dialog is
@@ -3315,14 +3328,19 @@ kimi_wait_for_ready() {
       trust_enters=$((trust_enters + 1))
     else
       trust_still_visible=0
-      if kimi_trust_dialog_markers_present "$pane"; then
+      if [ "$trust_seen" -eq 0 ] && kimi_trust_marker_is_present "$pane"; then
         trust_markers_pending=1
-      # A successful key send is not evidence that Kimi accepted trust. Only
-      # the ordinary readiness signals in a later capture prove advancement.
-      elif printf '%s\n' "$pane" | grep -Fq 'Welcome to Kimi Code!' ||
-        kimi_composer_is_empty
-      then
-        return 0
+        dialog_free_captures=0
+      else
+        trust_markers_pending=0
+        # The banner prints before the dialog paints its first frame, so a
+        # single ready-looking capture cannot be told apart from a pane whose
+        # dialog is one redraw away. Two consecutive captures with no dialog
+        # text can.
+        dialog_free_captures=$((dialog_free_captures + 1))
+        if [ "$dialog_free_captures" -ge 2 ] && kimi_ready_signal_is_present "$pane"; then
+          return 0
+        fi
       fi
     fi
     i=$((i + 1))
@@ -3333,7 +3351,7 @@ kimi_wait_for_ready() {
   elif [ "$trust_seen" -eq 1 ]; then
     KIMI_READY_FAILURE_DETAIL="kimi trust dialog was answered but the pane never advanced to a verified ready signal; saw 'Trust this folder?', the navigation hint, selected 'Trust this folder', and the negative Don't trust option"
   elif [ "$trust_markers_pending" -eq 1 ]; then
-    KIMI_READY_FAILURE_DETAIL="kimi did not show a verified ready signal before brief delivery; 'Trust this folder?' and the negative Don't trust option stayed on screen without the complete dialog, so the pane was never safe to answer or to treat as ready"
+    KIMI_READY_FAILURE_DETAIL="kimi did not show a verified ready signal before brief delivery; trust dialog text stayed on screen without the complete dialog, so the pane was never safe to answer or to treat as ready"
   fi
   return 1
 }
