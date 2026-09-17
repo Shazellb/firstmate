@@ -3281,27 +3281,45 @@ kimi_trust_dialog_is_visible() { # <plain-pane-capture>
     printf '%s\n' "$pane" | grep -Fq "Don't trust"
 }
 
+# The complete dialog above decides whether to press Enter; these two markers
+# decide whether the pane is safe to call ready. A capture caught mid-redraw,
+# or in a pane too narrow to render the navigation hint on one row, fails the
+# complete-dialog test while the dialog is still up and waiting, and Kimi's
+# startup banner sits above it in that same capture. Treating such a pane as
+# ready would type the brief pointer into the dialog and lose it.
+kimi_trust_dialog_markers_present() { # <plain-pane-capture>
+  local pane=$1
+  printf '%s\n' "$pane" | grep -Fq 'Trust this folder?' &&
+    printf '%s\n' "$pane" | grep -Fq "Don't trust"
+}
+
 kimi_wait_for_ready() {
   local pane i=0 max=${FM_KIMI_READY_POLLS:-60} interval=${FM_KIMI_POLL_INTERVAL:-0.5}
-  local trust_answered=0 trust_seen=0 trust_still_visible=0
+  local trust_enters=0 trust_seen=0 trust_still_visible=0 trust_markers_pending=0
   KIMI_READY_FAILURE_DETAIL='kimi did not show a verified ready signal before brief delivery'
   while [ "$i" -lt "$max" ]; do
     pane=$(kimi_capture)
     if kimi_trust_dialog_is_visible "$pane"; then
       trust_seen=1
       trust_still_visible=1
-      if [ "$trust_answered" -eq 0 ]; then
-        if ! spawn_send_key "$T" Enter; then
-          KIMI_READY_FAILURE_DETAIL="kimi trust dialog was seen but the affirmative selection could not be submitted"
-          return 1
-        fi
-        trust_answered=1
+      trust_markers_pending=0
+      # Kimi swallows keypresses during its startup window - the same hazard
+      # FM_KIMI_SUBMIT_RETRIES covers for the brief pointer - so the
+      # affirmative selection is re-sent on every poll the complete dialog is
+      # still on screen. The dialog's own disappearance is the postcondition:
+      # once it clears, this branch cannot fire again.
+      if ! spawn_send_key "$T" Enter; then
+        KIMI_READY_FAILURE_DETAIL="kimi trust dialog was seen but the affirmative selection could not be submitted"
+        return 1
       fi
+      trust_enters=$((trust_enters + 1))
     else
       trust_still_visible=0
+      if kimi_trust_dialog_markers_present "$pane"; then
+        trust_markers_pending=1
       # A successful key send is not evidence that Kimi accepted trust. Only
       # the ordinary readiness signals in a later capture prove advancement.
-      if printf '%s\n' "$pane" | grep -Fq 'Welcome to Kimi Code!' ||
+      elif printf '%s\n' "$pane" | grep -Fq 'Welcome to Kimi Code!' ||
         kimi_composer_is_empty
       then
         return 0
@@ -3311,9 +3329,11 @@ kimi_wait_for_ready() {
     [ "$i" -ge "$max" ] || sleep "$interval"
   done
   if [ "$trust_still_visible" -eq 1 ]; then
-    KIMI_READY_FAILURE_DETAIL="kimi trust dialog did not clear after selecting 'Trust this folder'; saw 'Trust this folder?', the navigation hint, selected 'Trust this folder', and the negative Don't trust option"
+    KIMI_READY_FAILURE_DETAIL="kimi trust dialog did not clear after selecting 'Trust this folder' on $trust_enters poll(s); saw 'Trust this folder?', the navigation hint, selected 'Trust this folder', and the negative Don't trust option"
   elif [ "$trust_seen" -eq 1 ]; then
     KIMI_READY_FAILURE_DETAIL="kimi trust dialog was answered but the pane never advanced to a verified ready signal; saw 'Trust this folder?', the navigation hint, selected 'Trust this folder', and the negative Don't trust option"
+  elif [ "$trust_markers_pending" -eq 1 ]; then
+    KIMI_READY_FAILURE_DETAIL="kimi did not show a verified ready signal before brief delivery; 'Trust this folder?' and the negative Don't trust option stayed on screen without the complete dialog, so the pane was never safe to answer or to treat as ready"
   fi
   return 1
 }

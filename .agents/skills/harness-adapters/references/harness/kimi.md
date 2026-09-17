@@ -14,7 +14,7 @@ Verified on 2026-09-17 with Kimi Code CLI 2.0.0.
 | Interrupt | Single Escape, which prints `Interrupted by user`. |
 | Skill invocation | `/<skill>`, for example `/no-mistakes`; Firstmate skills are discovered. |
 | Autonomy | `--auto` is the `Never Ask` tier; `-y` and `--yolo` now select the distinct, weaker `Ask When Needed` tier and are not used. |
-| Trust dialog | A fresh worktree shows `Trust this folder?` with `Trust this folder` pre-selected; spawn recognizes the complete dialog, sends one Enter, verifies that a later pane capture no longer contains it, and then continues the ordinary readiness gate. |
+| Trust dialog | A fresh worktree shows `Trust this folder?` with `Trust this folder` pre-selected; spawn recognizes the complete dialog, sends Enter on every poll the complete dialog is still on screen, verifies that a later pane capture no longer contains it, and then continues the ordinary readiness gate. |
 | Slash submission | One Enter submits, with no popup swallow or settle hazard. |
 | Environment marker | None; identity comes from process ancestry command name `kimi`, which `../../../bin/fm-harness.sh` keeps a retained foreign marker from overriding. |
 | Composer | Bordered box with a bare `>` prompt glyph and no observed ghost or placeholder text. |
@@ -23,7 +23,8 @@ Verified on 2026-09-17 with Kimi Code CLI 2.0.0.
 ## Readiness-gated start
 
 `../../../bin/fm-spawn.sh` launches Kimi bare, handles the complete 2.0.0 trust dialog when it appears, waits for the composer box or `Welcome to Kimi Code!`, sends only `Read the brief at <absolute-path> and follow it exactly.`, and requires a cleared composer plus either the echoed `✨` submission or nonzero context before accepting delivery.
-The trust answer is one-shot and is accepted only after a later capture proves that the dialog cleared; a stuck dialog fails with the observed dialog signals in the diagnostic.
+The trust answer is retried until the dialog clears - Kimi swallows keypresses during its startup window, so a single Enter can be dropped - and the re-send is gated on the complete dialog still being visible, so it cannot fire once the dialog cleared. Trust is accepted only after a later capture proves that the dialog cleared; a stuck dialog fails with the observed dialog signals and the answer count in the diagnostic.
+While `Trust this folder?` and the negative `Don't trust` option are both still on screen, no readiness signal is accepted: a capture caught mid-redraw, or a pane too narrow to render the navigation hint on one row, misses the complete dialog while the banner above it would otherwise read as ready.
 This launch-then-send shape is mandatory because Kimi rejects positional instructions as an unknown command.
 The path must be absolute because the instructions live outside the task worktree and Kimi reads them there without `--add-dir`.
 
