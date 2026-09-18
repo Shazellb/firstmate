@@ -294,7 +294,8 @@
 # every poll the complete dialog is still there, refuses any ready verdict while
 # dialog text is on that pane, and requires two consecutive captures that are
 # each ready and dialog-free before the ordinary readiness gates can pass. A
-# blank viewport read proves nothing either way and only costs the poll.
+# blank viewport read proves nothing either way: it costs the poll and restarts
+# that count. A viewport read that fails outright fails readiness at once.
 # grok uses a firstmate-owned global hook under ${GROK_HOME:-$HOME/.grok}/hooks
 # plus a gitignored .fm-grok-turnend worktree pointer and a state token.
 # muse installs no hook at all - its plugin engine is off in the default build - so
@@ -2287,7 +2288,7 @@ case "$LAUNCH" in
   KIMI_BIN=$(resolve_kimi_binary) || exit 1
   LAUNCH=${LAUNCH//__KIMIBIN__/$(shell_quote "$KIMI_BIN")}
   fm_backend_visible_capture_supported "$BACKEND" || {
-    echo "error: refusing Kimi spawn because backend '$BACKEND' has no viewport-bounded capture; Kimi 2.0.0 gates a fresh worktree on a trust dialog that can only be answered and confirmed cleared from a scrollback-free read of the live pane" >&2
+    echo "error: refusing Kimi spawn because backend '$BACKEND' has no verified viewport-bounded capture; Kimi 2.0.0 gates a fresh worktree on a trust dialog that can only be answered and confirmed cleared from a scrollback-free read of the live pane" >&2
     exit 1
   }
   if [ "$KIND" != secondmate ]; then
@@ -3274,10 +3275,11 @@ kimi_capture() {
 # which would storm Enter into a live composer and then fail an already trusted
 # spawn for a dialog that did clear. There is deliberately no fallback to the
 # bounded capture: the spawn refuses at preflight on a backend that cannot read
-# the viewport, and an empty read here is absence of evidence, which the poll
-# loop treats as a skipped poll rather than as either verdict.
+# the viewport, a read that fails outright fails readiness with its exit status
+# and the backend's own error on stderr, and only a successful empty read is
+# absence of evidence, which the poll loop treats as a skipped poll.
 kimi_visible_capture() {
-  fm_backend_visible_capture "$BACKEND" "$T" "$W" 2>/dev/null || true
+  fm_backend_visible_capture "$BACKEND" "$T" "$W"
 }
 
 # Kimi launch-readiness and delivery route their composer-emptiness half
@@ -3292,44 +3294,51 @@ kimi_composer_is_empty() {
   [ "$(fm_backend_composer_state "$BACKEND" "$T" "$W" 2>/dev/null)" = empty ]
 }
 
+# The navigation hint is matched as its two distinctive tokens rather than as
+# one row: a pane narrower than the row wraps it, and a wrapped hint is still
+# the complete dialog waiting for an answer.
 kimi_trust_dialog_is_visible() { # <plain-pane-capture>
   local pane=$1
-  printf '%s\n' "$pane" | grep -Fq 'Trust this folder?' &&
-    printf '%s\n' "$pane" | grep -Fq '↑↓ navigate · Enter select · Esc exit' &&
-    printf '%s\n' "$pane" | grep -Fq '❯ Trust this folder' &&
-    printf '%s\n' "$pane" | grep -Fq "Don't trust"
+  case "$pane" in *'Trust this folder?'*) ;; *) return 1 ;; esac
+  case "$pane" in *'↑↓ navigate'*) ;; *) return 1 ;; esac
+  case "$pane" in *'Enter select'*) ;; *) return 1 ;; esac
+  case "$pane" in *'❯ Trust this folder'*) ;; *) return 1 ;; esac
+  case "$pane" in *"Don't trust"*) ;; *) return 1 ;; esac
 }
 
 # The complete dialog above decides whether to press Enter. Any single marker
 # of it on the visible pane decides whether that pane is safe to call ready: a
-# capture caught mid-redraw, one taken in a pane too narrow to render the
-# navigation hint on one row, and one that has painted only the dialog's box
-# title all fail the complete-dialog test while the dialog is still up and
+# capture caught mid-redraw and one that has painted only the dialog's box
+# title both fail the complete-dialog test while the dialog is still up and
 # waiting, with Kimi's startup banner sitting above it in that same capture.
 # Treating such a pane as ready would type the brief pointer into the dialog
 # and lose it.
 kimi_trust_marker_is_present() { # <plain-pane-capture>
-  local pane=$1
-  printf '%s\n' "$pane" | grep -Fq 'Trust this folder' ||
-    printf '%s\n' "$pane" | grep -Fq "Don't trust"
+  case "$1" in *'Trust this folder'* | *"Don't trust"*) return 0 ;; esac
+  return 1
 }
 
 # A successful key send is not evidence that Kimi accepted trust. Only the
 # ordinary readiness signals in a later capture prove advancement.
 kimi_ready_signal_is_present() { # <plain-pane-capture>
-  printf '%s\n' "$1" | grep -Fq 'Welcome to Kimi Code!' || kimi_composer_is_empty
+  case "$1" in *'Welcome to Kimi Code!'*) return 0 ;; esac
+  kimi_composer_is_empty
 }
 
 kimi_wait_for_ready() {
-  local pane i=0 max=${FM_KIMI_READY_POLLS:-60} interval=${FM_KIMI_POLL_INTERVAL:-0.5}
+  local pane capture_rc i=0 max=${FM_KIMI_READY_POLLS:-60} interval=${FM_KIMI_POLL_INTERVAL:-0.5}
   local trust_enters=0 trust_seen=0 trust_still_visible=0 trust_markers_pending=0
   local ready_captures=0
   KIMI_READY_FAILURE_DETAIL='kimi did not show a verified ready signal before brief delivery'
   while [ "$i" -lt "$max" ]; do
-    pane=$(kimi_visible_capture)
+    capture_rc=0
+    pane=$(kimi_visible_capture) || capture_rc=$?
+    if [ "$capture_rc" -ne 0 ]; then
+      KIMI_READY_FAILURE_DETAIL="kimi readiness could not read the visible viewport of backend '$BACKEND' (viewport capture exited $capture_rc), so the trust dialog could neither be answered nor ruled out"
+      return 1
+    fi
     if [ -z "$pane" ]; then
-      trust_still_visible=0
-      trust_markers_pending=0
+      ready_captures=0
       i=$((i + 1))
       [ "$i" -ge "$max" ] || sleep "$interval"
       continue
