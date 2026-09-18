@@ -288,11 +288,11 @@
 # Kimi uses one surgically installed Firstmate region in $HOME/.kimi-code/config.toml,
 # a firstmate-owned global hook and registry, and a gitignored per-task pointer.
 # Kimi 2.0.0 also gates a fresh worktree on an interactive folder-trust dialog.
-# Its launch-readiness loop recognizes the complete dialog, re-selects the
-# already highlighted affirmative option on every poll the complete dialog is
-# still on screen, refuses any ready verdict while unanswered dialog text is on
-# the pane, and requires two consecutive captures free of it before the ordinary
-# readiness gates can pass.
+# Its launch-readiness loop reads the visible pane, recognizes the complete
+# dialog, re-selects the already highlighted affirmative option on every poll
+# the complete dialog is still there, refuses any ready verdict while dialog
+# text is on that pane, and requires two consecutive captures that are each
+# ready and dialog-free before the ordinary readiness gates can pass.
 # grok uses a firstmate-owned global hook under ${GROK_HOME:-$HOME/.grok}/hooks
 # plus a gitignored .fm-grok-turnend worktree pointer and a state token.
 # muse installs no hook at all - its plugin engine is off in the default build - so
@@ -3263,6 +3263,19 @@ kimi_capture() {
   fm_backend_capture "$BACKEND" "$T" 120 "$W" 2>/dev/null || true
 }
 
+# Trust decisions read the visible pane only. The dialog is a TUI frame, so a
+# scrollback-backed capture keeps reporting it long after Kimi redrew past it -
+# which would storm Enter into a live composer and then fail an already trusted
+# spawn for a dialog that did clear. Backends whose capture primitive cannot
+# bound itself to the visible screen answer a zero-line request with nothing;
+# those fall back to the bounded capture they read before.
+kimi_visible_capture() {
+  local visible
+  visible=$(fm_backend_capture "$BACKEND" "$T" 0 "$W" 2>/dev/null || true)
+  [ -n "$visible" ] || visible=$(kimi_capture)
+  printf '%s\n' "$visible"
+}
+
 # Kimi launch-readiness and delivery route their composer-emptiness half
 # through the shared classifier (bin/fm-composer-lib.sh via
 # fm_backend_composer_state), the same owner every steer and injection guard
@@ -3284,14 +3297,13 @@ kimi_trust_dialog_is_visible() { # <plain-pane-capture>
 }
 
 # The complete dialog above decides whether to press Enter. Any single marker
-# of it decides whether the pane is safe to call ready: a capture caught
-# mid-redraw, one taken in a pane too narrow to render the navigation hint on
-# one row, and one that has painted only the dialog's box title all fail the
-# complete-dialog test while the dialog is still up and waiting, with Kimi's
-# startup banner sitting above it in that same capture. Treating such a pane as
-# ready would type the brief pointer into the dialog and lose it. Once the
-# dialog has been answered in this launch, dialog text left behind in scrollback
-# is expected and no longer withholds the verdict.
+# of it on the visible pane decides whether that pane is safe to call ready: a
+# capture caught mid-redraw, one taken in a pane too narrow to render the
+# navigation hint on one row, and one that has painted only the dialog's box
+# title all fail the complete-dialog test while the dialog is still up and
+# waiting, with Kimi's startup banner sitting above it in that same capture.
+# Treating such a pane as ready would type the brief pointer into the dialog
+# and lose it.
 kimi_trust_marker_is_present() { # <plain-pane-capture>
   local pane=$1
   printf '%s\n' "$pane" | grep -Fq 'Trust this folder' ||
@@ -3307,15 +3319,15 @@ kimi_ready_signal_is_present() { # <plain-pane-capture>
 kimi_wait_for_ready() {
   local pane i=0 max=${FM_KIMI_READY_POLLS:-60} interval=${FM_KIMI_POLL_INTERVAL:-0.5}
   local trust_enters=0 trust_seen=0 trust_still_visible=0 trust_markers_pending=0
-  local dialog_free_captures=0
+  local ready_captures=0
   KIMI_READY_FAILURE_DETAIL='kimi did not show a verified ready signal before brief delivery'
   while [ "$i" -lt "$max" ]; do
-    pane=$(kimi_capture)
+    pane=$(kimi_visible_capture)
     if kimi_trust_dialog_is_visible "$pane"; then
       trust_seen=1
       trust_still_visible=1
       trust_markers_pending=0
-      dialog_free_captures=0
+      ready_captures=0
       # Kimi swallows keypresses during its startup window - the same hazard
       # FM_KIMI_SUBMIT_RETRIES covers for the brief pointer - so the
       # affirmative selection is re-sent on every poll the complete dialog is
@@ -3328,18 +3340,20 @@ kimi_wait_for_ready() {
       trust_enters=$((trust_enters + 1))
     else
       trust_still_visible=0
-      if [ "$trust_seen" -eq 0 ] && kimi_trust_marker_is_present "$pane"; then
+      if kimi_trust_marker_is_present "$pane"; then
         trust_markers_pending=1
-        dialog_free_captures=0
+        ready_captures=0
       else
         trust_markers_pending=0
-        # The banner prints before the dialog paints its first frame, so a
-        # single ready-looking capture cannot be told apart from a pane whose
-        # dialog is one redraw away. Two consecutive captures with no dialog
-        # text can.
-        dialog_free_captures=$((dialog_free_captures + 1))
-        if [ "$dialog_free_captures" -ge 2 ] && kimi_ready_signal_is_present "$pane"; then
-          return 0
+        # The banner prints before the dialog paints its first frame, so one
+        # ready-looking capture cannot be told apart from a pane whose dialog is
+        # one redraw away. Two consecutive captures that are each ready and free
+        # of dialog text can; any capture that is not ready restarts the count.
+        if kimi_ready_signal_is_present "$pane"; then
+          ready_captures=$((ready_captures + 1))
+          [ "$ready_captures" -lt 2 ] || return 0
+        else
+          ready_captures=0
         fi
       fi
     fi

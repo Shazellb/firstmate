@@ -50,6 +50,9 @@ fake_screen() {
     trust-partial)
       printf 'Welcome to Kimi Code!\nTrust this folder?\n%s\nDon'"'"'t trust\n' "$FM_FAKE_PANE_PATH"
       ;;
+    booting)
+      printf 'shell starting\n$ \n'
+      ;;
     banner-only)
       printf 'Welcome to Kimi Code!\nstarting in %s\n' "$FM_FAKE_PANE_PATH"
       ;;
@@ -63,6 +66,12 @@ fake_screen() {
       printf 'shell starting\n$ \n'
       ;;
   esac
+}
+fake_history() {
+  if [ "${FM_FAKE_KIMI_HISTORY_KEEPS_DIALOG:-no}" = yes ] \
+     && [ -s "$FM_FAKE_KIMI_TRUST_ENTER_LOG" ]; then
+    printf '╭─ Trust this folder? ─╮\n│ ↑↓ navigate · Enter select · Esc exit │\n│ ❯ Trust this folder │\n│   Don'"'"'t trust │\n╰──────────────────────╯\n'
+  fi
 }
 fake_cursor_y() {
   case "$state" in
@@ -95,7 +104,7 @@ case "${1:-}" in
         *)
           printf '%s\n' "$literal" >> "$FM_FAKE_POINTER_LOG"
           case "$state" in
-            trust|trust-partial|trust-decoy|banner-only) ;;
+            trust|trust-partial|trust-decoy|booting|banner-only) ;;
             *) printf 'pointer-typed\n' > "$FM_FAKE_KIMI_STATE" ;;
           esac
           ;;
@@ -111,7 +120,7 @@ case "${1:-}" in
                 fresh) printf 'trust\n' > "$FM_FAKE_KIMI_STATE" ;;
                 decoy) printf 'trust-decoy\n' > "$FM_FAKE_KIMI_STATE" ;;
                 partial) printf 'trust-partial\n' > "$FM_FAKE_KIMI_STATE" ;;
-                late) printf 'banner-only\n' > "$FM_FAKE_KIMI_STATE" ;;
+                late) printf 'booting\n' > "$FM_FAKE_KIMI_STATE" ;;
                 *) printf 'ready\n' > "$FM_FAKE_KIMI_STATE" ;;
               esac
             fi
@@ -144,9 +153,6 @@ case "${1:-}" in
     exit 0
     ;;
   capture-pane)
-    if [ "$state" = banner-only ]; then
-      printf 'trust\n' > "$FM_FAKE_KIMI_STATE"
-    fi
     start= end= prev=
     for arg in "$@"; do
       case "$prev" in
@@ -155,6 +161,15 @@ case "${1:-}" in
       esac
       case "$arg" in -S|-E) prev=$arg ;; *) prev= ;; esac
     done
+    case "$start" in
+      -0|-120)
+        case "$state" in
+          booting) printf 'banner-only\n' > "$FM_FAKE_KIMI_STATE" ;;
+          banner-only) printf 'trust\n' > "$FM_FAKE_KIMI_STATE" ;;
+        esac
+        ;;
+    esac
+    [ "$start" != -120 ] || fake_history
     case "$start:$end" in
       *[!0-9:]*|'':*|*:'') fake_screen ;;
       *) fake_screen | awk -v start="$start" -v end="$end" \
@@ -213,6 +228,7 @@ run_spawn() {
     FM_FAKE_KIMI_TRUST_ENTER_LOG="$case_dir/trust-enter.log" \
     FM_FAKE_KIMI_TRUST="${FM_FAKE_KIMI_TRUST:-remembered}" \
     FM_FAKE_KIMI_TRUST_CLEARS="${FM_FAKE_KIMI_TRUST_CLEARS:-yes}" \
+    FM_FAKE_KIMI_HISTORY_KEEPS_DIALOG="${FM_FAKE_KIMI_HISTORY_KEEPS_DIALOG:-no}" \
     FM_FAKE_KIMI_SWALLOWED="$case_dir/kimi.swallowed" \
     FM_FAKE_KIMI_SWALLOW_FIRST="${FM_FAKE_KIMI_SWALLOW_FIRST:-no}" \
     FM_FAKE_TMUX_CALL_LOG="$case_dir/tmux-calls.log" \
@@ -602,7 +618,7 @@ test_kimi_banner_before_the_dialog_paints_does_not_pass_readiness() {
   rec=$(make_spawn_case trust-late "$id")
   read_spawn_record "$rec"
   rc=0
-  out=$(FM_KIMI_READY_POLLS=4 FM_FAKE_KIMI_TRUST=late run_spawn \
+  out=$(FM_KIMI_READY_POLLS=5 FM_FAKE_KIMI_TRUST=late run_spawn \
     "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id") || rc=$?
   expect_code 0 "$rc" "a banner captured before the dialog painted should wait, then trust and deliver"
   assert_contains "$out" "spawned $id harness=kimi" \
@@ -614,6 +630,27 @@ test_kimi_banner_before_the_dialog_paints_does_not_pass_readiness() {
   assert_grep "Read the brief at " "$CASE_DIR/pointer.log" \
     "Kimi brief pointer was not delivered once the late dialog cleared"
   pass "fm-spawn: a Kimi banner captured before the trust dialog paints does not read as ready"
+}
+
+test_kimi_answered_dialog_left_in_history_does_not_restart_the_answer() {
+  local id rec out rc
+  id=kimi-trust-history-y6
+  rec=$(make_spawn_case trust-history "$id")
+  read_spawn_record "$rec"
+  rc=0
+  out=$(FM_KIMI_READY_POLLS=3 FM_FAKE_KIMI_TRUST=fresh FM_FAKE_KIMI_HISTORY_KEEPS_DIALOG=yes run_spawn \
+    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id") || rc=$?
+  expect_code 0 "$rc" "an answered trust dialog still in scrollback should not block the spawn"
+  assert_contains "$out" "spawned $id harness=kimi" \
+    "Kimi spawn did not complete with the answered trust dialog still in scrollback"
+  case "$out" in
+    *"did not clear"*) fail "Kimi reported a stuck trust dialog that had already cleared" ;;
+  esac
+  [ "$(wc -l < "$CASE_DIR/trust-enter.log" | tr -d ' ')" = 1 ] \
+    || fail "Kimi answered the trust dialog again from its scrollback copy"
+  assert_grep "Read the brief at " "$CASE_DIR/pointer.log" \
+    "Kimi brief pointer was not delivered past the scrollback copy of the dialog"
+  pass "fm-spawn: an answered Kimi trust dialog left in scrollback neither re-answers nor fails the spawn"
 }
 
 test_kimi_partial_trust_dialog_blocks_the_ready_verdict() {
@@ -846,6 +883,7 @@ test_kimi_readiness_gate_precedes_pointer
 test_kimi_fresh_worktree_trust_is_answered_and_verified
 test_kimi_swallowed_trust_enter_is_retried_until_the_dialog_clears
 test_kimi_banner_before_the_dialog_paints_does_not_pass_readiness
+test_kimi_answered_dialog_left_in_history_does_not_restart_the_answer
 test_kimi_partial_trust_dialog_blocks_the_ready_verdict
 test_kimi_stuck_trust_dialog_fails_before_delivery
 test_kimi_trust_detection_requires_the_complete_dialog
