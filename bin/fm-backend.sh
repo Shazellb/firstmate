@@ -730,6 +730,34 @@ fm_backend_capture() {  # <backend> <target> <lines> [expected-label]
   esac
 }
 
+# fm_backend_visible_capture_supported: whether <backend> can read the visible
+# viewport WITHOUT scrollback. Callers that must not mistake a scrolled-away
+# frame for the live screen ask this first and fail closed on a no.
+fm_backend_visible_capture_supported() {  # <backend>
+  case "$1" in
+    tmux|herdr|zellij) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# fm_backend_visible_capture: the visible viewport, never scrollback. A backend
+# whose CLI has no viewport-bounded read declines here rather than answering
+# with a history-backed capture the caller would read as the live screen: cmux's
+# `read-screen --scrollback` and orca's `terminal read --limit` are both
+# history reads with no viewport mode, so they have nothing honest to return.
+fm_backend_visible_capture() {  # <backend> <target> [expected-label]
+  local backend=$1
+  shift
+  fm_backend_source "$backend" || return 1
+  case "$backend" in
+    tmux) fm_backend_tmux_visible_capture "$@" ;;
+    herdr) fm_backend_herdr_visible_capture "$@" ;;
+    zellij) fm_backend_zellij_visible_capture "$@" ;;
+    orca|cmux) echo "error: backend '$backend' has no viewport-bounded capture primitive" >&2; return 1 ;;
+    *) echo "error: no visible-capture implementation for backend '$backend'" >&2; return 1 ;;
+  esac
+}
+
 # fm_backend_send_key: one backend-supported named special key.
 fm_backend_send_key() {  # <backend> <target> <key> [expected-label]
   local backend=$1

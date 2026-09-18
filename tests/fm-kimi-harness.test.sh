@@ -135,6 +135,9 @@ case "${1:-}" in
                 ;;
             esac
             ;;
+          ready|delivered)
+            printf 'enter\n' >> "$FM_FAKE_KIMI_STRAY_ENTER_LOG"
+            ;;
           pointer-typed)
             if [ "${FM_FAKE_KIMI_DELIVERY:-yes}" = yes ]; then
               if [ "${FM_FAKE_KIMI_SWALLOW_FIRST:-no}" = yes ] \
@@ -169,6 +172,11 @@ case "${1:-}" in
         esac
         ;;
     esac
+    if [ "$start" = -0 ] && [ "${FM_FAKE_KIMI_BLANK_AFTER_TRUST:-no}" = yes ] \
+       && [ -s "$FM_FAKE_KIMI_TRUST_ENTER_LOG" ] && [ ! -f "$FM_FAKE_KIMI_BLANKED" ]; then
+      : > "$FM_FAKE_KIMI_BLANKED"
+      exit 0
+    fi
     [ "$start" != -120 ] || fake_history
     case "$start:$end" in
       *[!0-9:]*|'':*|*:'') fake_screen ;;
@@ -211,6 +219,7 @@ EOF
   : > "$case_dir/pointer.log"
   : > "$case_dir/kimi.state"
   : > "$case_dir/trust-enter.log"
+  : > "$case_dir/stray-enter.log"
   : > "$case_dir/tmux-calls.log"
   printf '%s\n' "$case_dir|$home|$proj|$wt|$fakebin"
 }
@@ -229,6 +238,9 @@ run_spawn() {
     FM_FAKE_KIMI_TRUST="${FM_FAKE_KIMI_TRUST:-remembered}" \
     FM_FAKE_KIMI_TRUST_CLEARS="${FM_FAKE_KIMI_TRUST_CLEARS:-yes}" \
     FM_FAKE_KIMI_HISTORY_KEEPS_DIALOG="${FM_FAKE_KIMI_HISTORY_KEEPS_DIALOG:-no}" \
+    FM_FAKE_KIMI_STRAY_ENTER_LOG="$case_dir/stray-enter.log" \
+    FM_FAKE_KIMI_BLANK_AFTER_TRUST="${FM_FAKE_KIMI_BLANK_AFTER_TRUST:-no}" \
+    FM_FAKE_KIMI_BLANKED="$case_dir/kimi.blanked" \
     FM_FAKE_KIMI_SWALLOWED="$case_dir/kimi.swallowed" \
     FM_FAKE_KIMI_SWALLOW_FIRST="${FM_FAKE_KIMI_SWALLOW_FIRST:-no}" \
     FM_FAKE_TMUX_CALL_LOG="$case_dir/tmux-calls.log" \
@@ -653,6 +665,49 @@ test_kimi_answered_dialog_left_in_history_does_not_restart_the_answer() {
   pass "fm-spawn: an answered Kimi trust dialog left in scrollback neither re-answers nor fails the spawn"
 }
 
+test_kimi_blank_viewport_frame_costs_only_its_poll() {
+  local id rec out rc
+  id=kimi-trust-blank-y7
+  rec=$(make_spawn_case trust-blank "$id")
+  read_spawn_record "$rec"
+  rc=0
+  out=$(FM_KIMI_READY_POLLS=4 FM_FAKE_KIMI_TRUST=fresh FM_FAKE_KIMI_BLANK_AFTER_TRUST=yes \
+    FM_FAKE_KIMI_HISTORY_KEEPS_DIALOG=yes run_spawn \
+    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id") || rc=$?
+  expect_code 0 "$rc" "a blank viewport frame should cost one poll, not the spawn"
+  assert_contains "$out" "spawned $id harness=kimi" \
+    "Kimi spawn did not survive a blank viewport frame after the trust answer"
+  case "$out" in
+    *"did not clear"*) fail "a blank viewport frame was reported as a stuck trust dialog" ;;
+  esac
+  [ "$(wc -l < "$CASE_DIR/trust-enter.log" | tr -d ' ')" = 1 ] \
+    || fail "Kimi answered the trust dialog again after a blank viewport frame"
+  [ ! -s "$CASE_DIR/stray-enter.log" ] \
+    || fail "Kimi sent a stray Enter into the live composer after a blank viewport frame"
+  assert_grep "Read the brief at " "$CASE_DIR/pointer.log" \
+    "Kimi brief pointer was not delivered after the blank viewport frame"
+  pass "fm-spawn: a blank Kimi viewport frame costs its poll and nothing else"
+}
+
+test_kimi_refuses_a_backend_without_a_viewport_capture() {
+  local id rec out rc
+  id=kimi-no-viewport-y8
+  rec=$(make_spawn_case no-viewport "$id")
+  read_spawn_record "$rec"
+  fm_fake_exit0 "$FAKEBIN_DIR" cmux
+  rc=0
+  out=$(FM_BACKEND=cmux run_spawn \
+    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id") || rc=$?
+  [ "$rc" -ne 0 ] || fail "a Kimi spawn on a backend without a viewport capture should refuse"
+  assert_contains "$out" "backend 'cmux' has no viewport-bounded capture" \
+    "Kimi refusal did not name the backend and the missing viewport capability"
+  [ ! -s "$CASE_DIR/trust-enter.log" ] \
+    || fail "Kimi pressed Enter on a backend it cannot read the viewport of"
+  [ ! -s "$CASE_DIR/launch.log" ] \
+    || fail "Kimi was launched on a backend without a viewport capture"
+  pass "fm-spawn: Kimi refuses a backend that cannot read the viewport, before launching"
+}
+
 test_kimi_partial_trust_dialog_blocks_the_ready_verdict() {
   local id rec out rc
   id=kimi-trust-partial-y4
@@ -884,6 +939,8 @@ test_kimi_fresh_worktree_trust_is_answered_and_verified
 test_kimi_swallowed_trust_enter_is_retried_until_the_dialog_clears
 test_kimi_banner_before_the_dialog_paints_does_not_pass_readiness
 test_kimi_answered_dialog_left_in_history_does_not_restart_the_answer
+test_kimi_blank_viewport_frame_costs_only_its_poll
+test_kimi_refuses_a_backend_without_a_viewport_capture
 test_kimi_partial_trust_dialog_blocks_the_ready_verdict
 test_kimi_stuck_trust_dialog_fails_before_delivery
 test_kimi_trust_detection_requires_the_complete_dialog

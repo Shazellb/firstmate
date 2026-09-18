@@ -288,11 +288,13 @@
 # Kimi uses one surgically installed Firstmate region in $HOME/.kimi-code/config.toml,
 # a firstmate-owned global hook and registry, and a gitignored per-task pointer.
 # Kimi 2.0.0 also gates a fresh worktree on an interactive folder-trust dialog.
-# Its launch-readiness loop reads the visible pane, recognizes the complete
-# dialog, re-selects the already highlighted affirmative option on every poll
-# the complete dialog is still there, refuses any ready verdict while dialog
-# text is on that pane, and requires two consecutive captures that are each
-# ready and dialog-free before the ordinary readiness gates can pass.
+# Its launch-readiness loop reads the visible viewport - so the spawn refuses at
+# preflight on a backend with no viewport-bounded capture - recognizes the
+# complete dialog, re-selects the already highlighted affirmative option on
+# every poll the complete dialog is still there, refuses any ready verdict while
+# dialog text is on that pane, and requires two consecutive captures that are
+# each ready and dialog-free before the ordinary readiness gates can pass. A
+# blank viewport read proves nothing either way and only costs the poll.
 # grok uses a firstmate-owned global hook under ${GROK_HOME:-$HOME/.grok}/hooks
 # plus a gitignored .fm-grok-turnend worktree pointer and a state token.
 # muse installs no hook at all - its plugin engine is off in the default build - so
@@ -2284,6 +2286,10 @@ case "$LAUNCH" in
 *__KIMIBIN__*)
   KIMI_BIN=$(resolve_kimi_binary) || exit 1
   LAUNCH=${LAUNCH//__KIMIBIN__/$(shell_quote "$KIMI_BIN")}
+  fm_backend_visible_capture_supported "$BACKEND" || {
+    echo "error: refusing Kimi spawn because backend '$BACKEND' has no viewport-bounded capture; Kimi 2.0.0 gates a fresh worktree on a trust dialog that can only be answered and confirmed cleared from a scrollback-free read of the live pane" >&2
+    exit 1
+  }
   if [ "$KIND" != secondmate ]; then
     "$FM_ROOT/bin/fm-kimi-turnend-hook.sh" install || {
       echo "error: refusing Kimi spawn because the global turn-end hook could not be installed safely" >&2
@@ -3266,14 +3272,12 @@ kimi_capture() {
 # Trust decisions read the visible pane only. The dialog is a TUI frame, so a
 # scrollback-backed capture keeps reporting it long after Kimi redrew past it -
 # which would storm Enter into a live composer and then fail an already trusted
-# spawn for a dialog that did clear. Backends whose capture primitive cannot
-# bound itself to the visible screen answer a zero-line request with nothing;
-# those fall back to the bounded capture they read before.
+# spawn for a dialog that did clear. There is deliberately no fallback to the
+# bounded capture: the spawn refuses at preflight on a backend that cannot read
+# the viewport, and an empty read here is absence of evidence, which the poll
+# loop treats as a skipped poll rather than as either verdict.
 kimi_visible_capture() {
-  local visible
-  visible=$(fm_backend_capture "$BACKEND" "$T" 0 "$W" 2>/dev/null || true)
-  [ -n "$visible" ] || visible=$(kimi_capture)
-  printf '%s\n' "$visible"
+  fm_backend_visible_capture "$BACKEND" "$T" "$W" 2>/dev/null || true
 }
 
 # Kimi launch-readiness and delivery route their composer-emptiness half
@@ -3323,6 +3327,13 @@ kimi_wait_for_ready() {
   KIMI_READY_FAILURE_DETAIL='kimi did not show a verified ready signal before brief delivery'
   while [ "$i" -lt "$max" ]; do
     pane=$(kimi_visible_capture)
+    if [ -z "$pane" ]; then
+      trust_still_visible=0
+      trust_markers_pending=0
+      i=$((i + 1))
+      [ "$i" -ge "$max" ] || sleep "$interval"
+      continue
+    fi
     if kimi_trust_dialog_is_visible "$pane"; then
       trust_seen=1
       trust_still_visible=1
