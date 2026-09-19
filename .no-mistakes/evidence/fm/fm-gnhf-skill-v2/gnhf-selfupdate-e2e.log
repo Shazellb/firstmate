@@ -1,0 +1,21 @@
+== BEFORE (origin main = base b6930db): captain home holds gnhf as an untracked local file ==
+?? .agents/skills/gnhf/
+firstmate: skipped: dirty working tree
+FF_STATUS=skipped
+
+== Fresh install at base: skill absent ==
+absent: .agents/skills/gnhf/SKILL.md
+
+== AFTER (origin main = target 3b65ddb) ==
+fresh install tracks: .agents/skills/gnhf/SKILL.md
+fresh install status: '' (empty = clean)
+frontmatter: name: gnhf
+
+-- captain home (untracked copy removed, as the tracked file replaces it) self-updates --
+firstmate: updated 65a3bac..3b65ddb (instructions changed: AGENTS.md, bin, .agents/skills)
+FF_STATUS=updated FF_INSTR=AGENTS.md, bin, .agents/skills
+home tracks after update: .agents/skills/gnhf/SKILL.md; status: ''
+
+-- secondmate home (detached worktree lease at old commit) syncs to local HEAD --
+fm-sm1: updated 65a3bac..3b65ddb (instructions changed: AGENTS.md, bin, .agents/skills)
+FF_STATUS=updated; secondmate sees: .agents/skills/gnhf/SKILL.md
