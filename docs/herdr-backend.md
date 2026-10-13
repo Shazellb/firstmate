@@ -692,6 +692,9 @@ It uses the shared harness-process classifier in `bin/fm-agent-process-lib.sh`, 
 | A foreground holding anything else | The registration stays live, but only after the same bounded settle window the idle-shell proof uses. |
 | An unreadable process view | The pane is `unknown`, trusting neither the registration nor its absence. |
 
+The same process view also corroborates an absent registration, since a live harness may be unregistered.
+When `agent get` reports `agent_not_found`, a harness process proves the pane `live`, a shell-only view keeps it a `no-agent` husk, and anything else reads `unknown`.
+
 The settle window exists because an idle shell transiently hosts prompt helpers such as starship in its foreground group.
 The first agent or shell sample in that window decides.
 
@@ -713,8 +716,8 @@ The generic Herdr agent-liveness probe reuses that pane classifier, then applies
 | Pane read | Probe verdict |
 | --- | --- |
 | A structurally gone pane, or a pane read from a session positively reported as having no running server | `missing` |
-| A restored agent-less shell, or a stale registration over a shell-only pane | `dead` |
-| A registered agent with a live process | `alive` |
+| A restored agent-less shell proven shell-only, or a stale registration over a shell-only pane | `dead` |
+| A registered agent with a live process, or an unregistered pane whose process view proves a harness | `alive` |
 | Every other unexpected read | `unreadable` |
 
 Neither the stopped-server exception nor the stale-registration verdict widens husk detection or any close authority.
