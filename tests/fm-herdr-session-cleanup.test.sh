@@ -186,6 +186,9 @@ fm_backend_herdr_cli() {
   esac
 }
 
+# An unregistered pane is only agent-free once its process view says shell-only.
+fm_backend_herdr_pane_process_state() { printf 'shell'; }
+
 fm_backend_herdr_projection_close_pane_focus_preserving() {
   [ ! -e "$FIXTURE_DIR/focus-refuse" ] || return 1
   [ "${3:-}" = no-agent ] || return 1

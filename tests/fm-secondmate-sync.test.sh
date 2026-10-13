@@ -634,6 +634,11 @@ case "\$cmd \$sub" in
       exit 0
     fi
     ;;
+  "pane process-info")
+    # The stale pane holds only a shell: the test script itself, a live process
+    # with no harness descendant.
+    printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":%s,"foreground_processes":[{"pid":%s,"name":"zsh","argv0":"zsh","argv":["-zsh"]}]}}}\n' "\${4:-}" "$$" "$$"
+    ;;
   "agent get")
     if [ "\$arg" = "${stale#*:}" ]; then
       printf '{"error":{"code":"agent_not_found","message":"gone"}}\n' >&2
