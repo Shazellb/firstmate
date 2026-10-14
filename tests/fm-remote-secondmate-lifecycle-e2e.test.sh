@@ -1287,8 +1287,7 @@ ios_pane=$(sed -n 's/^herdr_pane_id=//p' "$remote_route_meta")
 jq --arg p "$ios_pane" \
   '.typed |= with_entries(select(.key != $p)) | .working |= with_entries(select(.key != $p))' \
   "$HERDR_STATE" > "$TMP_ROOT/herdr-dead.json" && mv "$TMP_ROOT/herdr-dead.json" "$HERDR_STATE"
-dbgv=$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh state ios 2>&1); echo "DBGV[$dbgv]" >&2; cat "$HERDR_LOG" | tail -8 >&2
-[ "$dbgv" = dead ] \
+[ "$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh state ios)" = dead ] \
   || fail "the agent-free remote pane did not classify dead"
 
 tabs_before=$(grep -c '^tab create' "$HERDR_LOG" || true)
