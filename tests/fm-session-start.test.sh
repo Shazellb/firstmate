@@ -474,6 +474,14 @@ case "${1:-} ${2:-}" in
       exit 1
     fi
     ;;
+  "pane process-info")
+    # The husk pane holds only its shell: an absent registration is no-agent
+    # only on this process-level proof. The shell pid is a live process the
+    # test supplies, because the proof reads the real process table.
+    pane=${4:-}
+    printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":%s,"foreground_process_group_id":%s,"foreground_processes":[]}}}\n' \
+      "$pane" "${FM_FAKE_HERDR_SHELL_PID:?}" "${FM_FAKE_HERDR_SHELL_PID:?}"
+    ;;
   "pane close")
     [ "${3:-}" = p-old ] && : > "$killed"
     ;;
@@ -681,9 +689,15 @@ EOF
 
 run_session_start_herdr_secondmate() {
   local root=$1 home=$2 fakebin=$3 mate=$4 log=$5 state=$6
+  local shell_pid
+  # The deferred network stage reads the process table after this returns, so
+  # the stand-in pane shell must outlive the call; it expires on its own.
+  sleep 120 >/dev/null 2>&1 &
+  shell_pid=$!
   FM_BACKEND=herdr FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" \
     FM_FAKE_SECOND_MATE_ID="$SESSION_START_HERDR_SECOND_MATE_ID" \
-    FM_FAKE_HARNESS_PID=$$ \
+    FM_FAKE_HARNESS_PID=$$ FM_FAKE_HERDR_SHELL_PID=$shell_pid \
+    FM_HERDR_PS_BIN=/bin/ps \
     run_session_start "$home" "$root" "$fakebin:$BASE_PATH"
 }
 

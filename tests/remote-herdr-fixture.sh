@@ -99,8 +99,16 @@ case "${1:-} ${2:-}" in
     jq_state --arg p "${3:-}" '.typed[$p] = true | .working[$p] = true' | save ;;
   "pane read") printf '\n' ;;
   "pane process-info")
-    printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":%s,"foreground_process_group_id":%s,"foreground_processes":[{"pid":%s,"name":"codex","argv0":"codex","argv":["codex"],"cmdline":"codex"}]}}}\n' \
-      "$pane" "$$" "$$" "$$" ;;
+    # A pane with no registered agent holds only its shell (the calling probe's
+    # shell pid, alive while it reads the process table); a registered one
+    # shows the harness in the foreground.
+    if [ "$(jq_state -r --arg p "$pane" '.typed[$p] // false')" = true ]; then
+      printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":%s,"foreground_process_group_id":%s,"foreground_processes":[{"pid":%s,"name":"codex","argv0":"codex","argv":["codex"],"cmdline":"codex"}]}}}\n' \
+        "$pane" "$$" "$$" "$$"
+    else
+      printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":%s,"foreground_process_group_id":%s,"foreground_processes":[]}}}\n' \
+        "$pane" "$PPID" "$PPID"
+    fi ;;
   "agent get")
     pane=${3:-}
     if [ "$(jq_state -r --arg p "$pane" '.working[$p] // false')" = true ]; then
