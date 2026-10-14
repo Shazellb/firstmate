@@ -48,6 +48,9 @@ cleanup() {
     . "$ROOT/bin/fm-remote-job-lib.sh"
     fm_remote_job_stop_worker_tree "$worker_pid" || true
   fi
+  if [ -f "$HERDR_STATE.shell.pid" ]; then
+    kill "$(cat "$HERDR_STATE.shell.pid")" 2>/dev/null || true
+  fi
   rm -rf -- "$TMP_ROOT"
 }
 trap cleanup EXIT
@@ -1287,8 +1290,9 @@ ios_pane=$(sed -n 's/^herdr_pane_id=//p' "$remote_route_meta")
 jq --arg p "$ios_pane" \
   '.typed |= with_entries(select(.key != $p)) | .working |= with_entries(select(.key != $p))' \
   "$HERDR_STATE" > "$TMP_ROOT/herdr-dead.json" && mv "$TMP_ROOT/herdr-dead.json" "$HERDR_STATE"
-[ "$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh state ios)" = dead ] \
-  || fail "the agent-free remote pane did not classify dead"
+dead_state=$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh state ios)
+[ "$dead_state" = dead ] \
+  || fail "the agent-free remote pane did not classify dead: state='$dead_state' process-info=$("$REMOTE_ROOT/bin/herdr" pane process-info --pane "$ios_pane" 2>&1) herdr-log-tail=$(tail -n 15 "$HERDR_LOG" 2>&1)"
 
 tabs_before=$(grep -c '^tab create' "$HERDR_LOG" || true)
 # exec keeps $! the watcher itself rather than the function's subshell, so a

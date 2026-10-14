@@ -99,15 +99,24 @@ case "${1:-} ${2:-}" in
     jq_state --arg p "${3:-}" '.typed[$p] = true | .working[$p] = true' | save ;;
   "pane read") printf '\n' ;;
   "pane process-info")
-    # A pane with no registered agent holds only its shell (the calling probe's
-    # shell pid, alive while it reads the process table); a registered one
-    # shows the harness in the foreground.
+    # A pane with no registered agent holds only its shell, a dedicated
+    # isolated sleep recorded beside the state file so no unrelated process
+    # is ever its descendant; a registered one shows the harness in the
+    # foreground.
     if [ "$(jq_state -r --arg p "$pane" '.typed[$p] // false')" = true ]; then
       printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":%s,"foreground_process_group_id":%s,"foreground_processes":[{"pid":%s,"name":"codex","argv0":"codex","argv":["codex"],"cmdline":"codex"}]}}}\n' \
         "$pane" "$$" "$$" "$$"
     else
+      shell_file="$STATE.shell.pid"
+      shell_pid=$(cat "$shell_file" 2>/dev/null || true)
+      if [ -z "$shell_pid" ] || ! kill -0 "$shell_pid" 2>/dev/null; then
+        sleep 600 >/dev/null 2>&1 </dev/null &
+        shell_pid=$!
+        disown "$shell_pid" 2>/dev/null || true
+        printf '%s\n' "$shell_pid" > "$shell_file"
+      fi
       printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":%s,"foreground_process_group_id":%s,"foreground_processes":[]}}}\n' \
-        "$pane" "$PPID" "$PPID"
+        "$pane" "$shell_pid" "$shell_pid"
     fi ;;
   "agent get")
     pane=${3:-}
