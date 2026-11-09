@@ -22,6 +22,8 @@
 #   - moving only `## Queued` items, refusing `## In flight` and historical
 #     `## Done` records, which must stay with their home for pruning or
 #     archiving;
+#   - refusing remote-route handoff of items whose `(repo: ...)` project is
+#     local-only, matching remote seed; local routes may receive those items;
 #   - the multi-key classification and idempotent per-key reporting: a key
 #     already present in the secondmate backlog is reported and skipped, and if
 #     any key matches neither backlog nothing is moved;
@@ -300,6 +302,47 @@ backlog_key_section() {
     }
     END { exit found ? 0 : 1 }
   ' "$file"
+}
+
+backlog_key_repo() {
+  local file=$1 key=$2
+  [ -f "$file" ] || return 1
+  awk -v key="$key" '
+    /^- \[[ x]\] / {
+      rest = $0
+      sub(/^- \[[ x]\] +/, "", rest)
+      id = rest
+      sub(/[ \t].*/, "", id)
+      if (id == key) {
+        if (match($0, /\(repo: [^)]+\)/)) {
+          repo = substr($0, RSTART + 7, RLENGTH - 8)
+          gsub(/^ +| +$/, "", repo)
+          if (repo != "") print repo
+        }
+        exit
+      }
+    }
+  ' "$file"
+}
+
+refuse_remote_local_only_items() {
+  local file=$1 key repo mode mode_line
+  shift
+  for key in "$@"; do
+    repo=$(backlog_key_repo "$file" "$key" || true)
+    [ -n "$repo" ] || continue
+    mode_line=$(FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$SCRIPT_DIR/fm-project-mode.sh" "$repo") || {
+      echo "error: refusing to hand off $key: project $repo does not resolve to a delivery posture" >&2
+      return 1
+    }
+    read -r mode _ <<EOF
+$mode_line
+EOF
+    if [ "$mode" = local-only ]; then
+      echo "error: refusing to hand off $key: project $repo is local-only and cannot be provisioned remotely" >&2
+      return 1
+    fi
+  done
 }
 
 backlog_key_noncanonical_body_lines() {
@@ -813,6 +856,9 @@ remote_handoff() { # <secondmate-id> <keys...>
       return 1
     done < <(backlog_key_noncanonical_body_lines "$MAIN_BACKLOG" "$key")
   done
+  if [ "${#to_move[@]}" -gt 0 ]; then
+    refuse_remote_local_only_items "$MAIN_BACKLOG" "${to_move[@]}" || return 1
+  fi
   # Do not append a fresh handoff to an older recovery batch. In particular, a
   # confirmed wake can survive when outbox cleanup fails; if new work were
   # staged into that outbox, the old confirmation would suppress the wake for

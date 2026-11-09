@@ -9,7 +9,10 @@
 #       no live process and is never recycled until the lease is released with
 #       "treehouse return". Projects are cloned
 #       from the active home into the secondmate home's projects/ directory.
-#       That project list is non-exclusive provisioning data. Pass --no-projects
+#       A local-only project is attached as a symlink to the active home's
+#       registered clone so workers and local landing use that same folder;
+#       remote-backed projects are still cloned. That project list is
+#       non-exclusive provisioning data. Pass --no-projects
 #       instead of a project list to seed a project-less home for a domain whose
 #       subject is the firstmate repo itself; it is mutually exclusive with a
 #       project list, and omitting both still fails loudly. A project-less seed
@@ -19,8 +22,10 @@
 #       initialized, an ignored .fm-secondmate-parent binding is published before
 #       the .fm-secondmate-home identity marker, and data/secondmates.md is updated.
 #       Seeding is transactional: on validation, clone, init, or registry failure,
-#       generated briefs, new homes, new project clones, and registry edits are
-#       rolled back. Treehouse-acquired homes are returned only when the rollback
+#       generated briefs, new homes, new project clones, new local-only
+#       project symlinks, and registry edits are rolled back. Rollback unlinks a
+#       local-only project symlink without resolving it, so the registered folder
+#       is never deleted. Treehouse-acquired homes are returned only when the rollback
 #       target is safe; a failed return warns because the lease may still be held.
 #       Set FM_SECONDMATE_CHARTER='<charter>' to seed from inline charter text
 #       when no filled charter brief exists. Set FM_SECONDMATE_SCOPE='<scope>'
@@ -326,28 +331,41 @@ validate_existing_parent_binding() {
 
 validate_project_destination() {
   local home=$1 project=$2 dst projects_dir abs_home abs_projects abs_dst abs_active_home abs_root
+  case "$project" in
+    ''|.|..|*/*|*$'\n'*)
+      echo "error: unsafe seeded project name: $project" >&2
+      return 1
+      ;;
+  esac
   projects_dir="$home/projects"
   dst="$projects_dir/$project"
   abs_home=$(resolved_path "$home")
   abs_projects=$(resolved_path "$projects_dir")
-  abs_dst=$(resolved_path "$dst")
   abs_active_home=$(resolved_path "$FM_HOME")
   abs_root=$(resolved_path "$FM_ROOT")
   if ! path_is_ancestor_of "$abs_home" "$abs_projects"; then
     echo "error: secondmate projects directory must resolve inside the secondmate home: $projects_dir" >&2
     return 1
   fi
-  if ! path_is_ancestor_of "$abs_projects" "$abs_dst"; then
-    echo "error: seeded project $project destination must resolve inside the secondmate projects directory: $dst" >&2
+  if [ "$abs_projects" = "$abs_active_home" ] || path_is_ancestor_of "$abs_active_home" "$abs_projects"; then
+    echo "error: secondmate projects directory cannot be inside the active firstmate home: $projects_dir" >&2
     return 1
   fi
-  if [ "$abs_dst" = "$abs_active_home" ] || path_is_ancestor_of "$abs_active_home" "$abs_dst"; then
-    echo "error: seeded project $project destination cannot be inside the active firstmate home: $dst" >&2
+  if [ "$abs_projects" = "$abs_root" ] || path_is_ancestor_of "$abs_root" "$abs_projects"; then
+    echo "error: secondmate projects directory cannot be inside the firstmate repo: $projects_dir" >&2
     return 1
   fi
-  if [ "$abs_dst" = "$abs_root" ] || path_is_ancestor_of "$abs_root" "$abs_dst"; then
-    echo "error: seeded project $project destination cannot be inside the firstmate repo: $dst" >&2
-    return 1
+  abs_dst="$abs_projects/$project"
+  if [ -L "$dst" ]; then
+    printf '%s\n' "$abs_dst"
+    return 0
+  fi
+  if [ -e "$dst" ]; then
+    [ -d "$dst" ] || { echo "error: seeded project $project exists at $dst but is not a directory" >&2; return 1; }
+    if [ "$(resolved_path "$dst")" != "$abs_dst" ]; then
+      echo "error: seeded project $project destination must resolve inside the secondmate projects directory: $dst" >&2
+      return 1
+    fi
   fi
   printf '%s\n' "$abs_dst"
 }
@@ -469,6 +487,33 @@ registered_posture_line() {  # <project>
   printf '%s\n' "$line"
 }
 
+attach_local_only_project() {
+  local project=$1 src=$2 dst=$3 abs_src current
+  abs_src=$(resolved_path "$src")
+  [ -d "$abs_src" ] || { echo "error: project $project registered folder is not a directory: $src" >&2; return 1; }
+  git -C "$abs_src" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+    echo "error: project $project registered folder is not a git repo: $abs_src" >&2
+    return 1
+  }
+  if [ -L "$dst" ]; then
+    if [ ! -e "$dst" ]; then
+      echo "error: seeded project $project at $dst is a broken symlink; expected $abs_src" >&2
+      return 1
+    fi
+    current=$(resolved_path "$dst")
+    [ "$current" = "$abs_src" ] || {
+      echo "error: seeded project $project at $dst is a symlink to $current; expected $abs_src" >&2
+      return 1
+    }
+    return 0
+  fi
+  if [ -e "$dst" ]; then
+    echo "error: seeded project $project at $dst exists and is not a symlink to the registered folder $abs_src" >&2
+    return 1
+  fi
+  ln -s -- "$abs_src" "$dst"
+}
+
 clone_project() {
   local project=$1 home=$2 src dst url dst_url mode mode_line
   src="$PROJECTS/$project"
@@ -480,7 +525,11 @@ clone_project() {
 $mode_line
 EOF
   if [ "$mode" = local-only ]; then
-    echo "error: project $project is local-only; secondmate routes support only no-mistakes and direct-PR projects" >&2
+    attach_local_only_project "$project" "$src" "$dst"
+    return
+  fi
+  if [ -L "$dst" ]; then
+    echo "error: seeded project $project at $dst is a symlink; $mode projects must be clones" >&2
     return 1
   fi
   if [ -e "$dst" ]; then
@@ -508,8 +557,7 @@ validate_seed_project() {
 $mode_line
 EOF
   if [ "$mode" = local-only ]; then
-    echo "error: project $project is local-only; secondmate routes support only no-mistakes and direct-PR projects" >&2
-    return 1
+    return 0
   fi
   url=$(git -C "$src" remote get-url origin 2>/dev/null || true)
   [ -n "$url" ] || { echo "error: project $project is $mode but has no origin remote" >&2; return 1; }
@@ -590,9 +638,47 @@ seed_rollback_target() {
   printf '%s\n' "$abs_target"
 }
 
+unlink_project_symlinks_in_home() {
+  local home=$1 projects_dir project_path
+  projects_dir="$home/projects"
+  [ -d "$projects_dir" ] || return 0
+  [ ! -L "$projects_dir" ] || return 0
+  for project_path in "$projects_dir"/* "$projects_dir"/.[!.]* "$projects_dir"/..?*; do
+    [ -L "$project_path" ] || continue
+    rm -f -- "$project_path"
+  done
+}
+
+unlink_seed_project_symlink() {
+  local target=$1 parent base abs_parent abs_projects abs_home
+  [ -n "$target" ] || return 1
+  [ -L "$target" ] || return 1
+  parent=$(dirname "$target")
+  base=$(basename "$target")
+  case "$base" in
+    ''|.|..|*/*)
+      echo "REFUSED: unsafe created project symlink $target" >&2
+      return 1
+      ;;
+  esac
+  abs_parent=$(resolved_path "$parent")
+  abs_home=$(resolved_path "$SEED_HOME")
+  abs_projects=$(resolved_path "$SEED_HOME/projects")
+  if ! path_is_ancestor_of "$abs_home" "$abs_projects"; then
+    echo "REFUSED: unsafe created project symlink $target has projects directory outside the secondmate home" >&2
+    return 1
+  fi
+  if [ "$abs_parent" != "$abs_projects" ]; then
+    echo "REFUSED: unsafe created project symlink $target is not in the secondmate projects directory" >&2
+    return 1
+  fi
+  rm -f -- "$target"
+}
+
 seed_return_treehouse_home() {
   local home=$1 abs_home
   abs_home=$(seed_rollback_target "$home" "treehouse-acquired home") || return 0
+  unlink_project_symlinks_in_home "$abs_home"
   if ! command -v treehouse >/dev/null 2>&1; then
     echo "warning: failed to return treehouse-acquired home $abs_home during seed rollback; treehouse command not found" >&2
     return 0
@@ -606,6 +692,7 @@ seed_return_treehouse_home() {
 seed_remove_created_home() {
   local home=$1 abs_home
   abs_home=$(seed_rollback_target "$home" "created home") || return 0
+  unlink_project_symlinks_in_home "$abs_home"
   rm -rf -- "$abs_home" 2>/dev/null || true
 }
 
@@ -627,6 +714,10 @@ seed_project_rollback_target() {
 
 seed_remove_created_project() {
   local project_path=$1 abs_project
+  if [ -L "$project_path" ]; then
+    unlink_seed_project_symlink "$project_path" || return 0
+    return 0
+  fi
   abs_project=$(seed_project_rollback_target "$project_path") || return 0
   rm -rf -- "$abs_project" 2>/dev/null || true
 }
@@ -969,7 +1060,7 @@ seed_home() {
 
   for project in "$@"; do
     project_dst=$(validate_project_destination "$home" "$project") || return 1
-    [ -e "$project_dst" ] || printf '%s\n' "$project_dst" >> "$SEED_CREATED_PROJECTS_FILE"
+    [ -e "$project_dst" ] || [ -L "$project_dst" ] || printf '%s\n' "$project_dst" >> "$SEED_CREATED_PROJECTS_FILE"
     clone_project "$project" "$home"
   done
   sync_project_registry "$home" "$@"
