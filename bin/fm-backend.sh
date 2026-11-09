@@ -1522,7 +1522,10 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
 # omits the exact window; the Herdr adapter reuses its strict husk classifier -
 # which verifies a registered agent against `pane process-info` and the real
 # process table, so a registration Herdr kept over a shell-only pane reads
-# `dead` here (issue #4115) - then maps a positively stopped session server to
+# `dead` here (issue #4115). A Herdr pane with no lifecycle registration still
+# reads `alive` when that process view, or pane-list `agent_session`, shows a
+# live harness such as Claude, and `ambiguous` when neither a harness nor a
+# shell can be proven - then maps a positively stopped session server to
 # `missing` only in this recovery-grade view. The Rex adapter classifies its
 # structured process view (foreground process and ancestors) through the same
 # shared classifier and reads a structured not-found as `missing`. Zellij

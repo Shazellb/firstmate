@@ -2668,11 +2668,15 @@ case "${1:-} ${2:-}" in
   'pane process-info')
     # A retained registration with a shell-only pane models an exited agent
     # whose Herdr status authority still belongs to its previous session.
-    if [ -f "$D/herdr-agent-registration" ]; then
-      printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":4242,"foreground_processes":[]}}}\n' \
+    # An adoptable husk (agent_not_found, no live marker) is also a shell.
+    # herdr-agent-live is the replacement that send-text just started;
+    # herdr-claude-unregistered is a live Claude that Herdr 0.9.5 reports as
+    # agent_not_found.
+    if [ -f "$D/herdr-agent-live" ] || [ -f "$D/herdr-claude-unregistered" ]; then
+      printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":4242,"foreground_processes":[{"pid":4243,"name":"claude","argv":["claude"],"cmdline":"claude"}]}}}\n' \
         "$(cat "$D/herdr-pane")"
     else
-      printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":4242,"foreground_processes":[{"pid":4243,"name":"claude","argv":["claude"],"cmdline":"claude"}]}}}\n' \
+      printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":4242,"foreground_processes":[{"pid":4242,"name":"zsh","argv0":"zsh","argv":["-zsh"],"cmdline":"-zsh"}]}}}\n' \
         "$(cat "$D/herdr-pane")"
     fi
     exit 0 ;;
@@ -2720,15 +2724,14 @@ SH
   chmod +x "$fb/herdr"
   cat > "$fb/ps" <<'SH'
 #!/usr/bin/env bash
-if [ -f "$FM_FAKE_DIR/herdr-agent-registration" ]; then
-  case "$*" in
-    '-axo pid=,ppid=,comm=') printf '4242 1 bash\n' ;;
-    '-p 4242 -o args=') printf 'bash\n' ;;
-    *) exec /bin/ps "$@" ;;
-  esac
-else
+if [ -f "$FM_FAKE_DIR/herdr-agent-live" ] || [ -f "$FM_FAKE_DIR/herdr-claude-unregistered" ]; then
   exec /bin/ps "$@"
 fi
+case "$*" in
+  '-axo pid=,ppid=,comm=') printf '4242 1 zsh\n' ;;
+  '-p 4242 -o args=') printf 'zsh\n' ;;
+  *) exec /bin/ps "$@" ;;
+esac
 SH
   chmod +x "$fb/ps"
 }
@@ -2925,6 +2928,28 @@ test_herdr_reclaim_refuses_an_agent_that_came_back() {
   [ "$(meta_field "$dir" rl74 herdr_pane_id)" = '%7' ] \
     || fail "a refused reclaim rewrote the record's pane id"
   pass "reclaim: a herdr agent that came back with its server refuses, so one worktree keeps one agent"
+}
+
+test_herdr_relaunch_refuses_an_unregistered_live_claude() {
+  local dir out rc log
+  herdr_case_or_skip herdr-claude-unregistered rl79 || {
+    echo "skip - herdr relaunch needs jq (the herdr adapter parses JSON with it)"
+    return 0
+  }
+  dir=$HERDR_CASE_DIR
+  rm -f "$dir/fake/herdr-stopped"
+  # Herdr 0.9.5 answers agent_not_found for an idle Claude while Claude still
+  # owns the pane. Typing a launch line here would land in the live TUI.
+  : > "$dir/fake/herdr-claude-unregistered"
+
+  out=$(run_spawn "$dir" rl79 --relaunch --harness claude); rc=$?
+  log=$(cat "$dir/fake/herdr-log")
+  [ "$rc" -ne 0 ] || fail "relaunch into a live unregistered Claude pane must refuse"$'\n'"$out"$'\n'"$log"
+  assert_not_contains "$log" "pane send-text" "a refused relaunch must type nothing into the live Claude pane"
+  assert_not_contains "$log" "tab create" "a refused relaunch must not mint a second tab"
+  [ "$(meta_field "$dir" rl79 herdr_pane_id)" = '%7' ] \
+    || fail "a refused relaunch rewrote the record's pane id"
+  pass "fm-spawn --relaunch: a live Claude that Herdr reports as agent_not_found is refused, nothing typed"
 }
 
 test_herdr_reclaim_keeps_the_task_whole() {
@@ -3231,6 +3256,7 @@ test_herdr_exit_reports_already_stopped_when_the_pane_outlived_its_server
 test_herdr_rebind_stays_in_the_recorded_session
 test_herdr_reclaim_refuses_an_agent_that_came_back
 test_herdr_reclaim_keeps_the_task_whole
+test_herdr_relaunch_refuses_an_unregistered_live_claude
 test_herdr_reclaim_of_a_secondmate_names_its_own_owner
 test_herdr_rebind_failure_from_a_plain_shell_names_the_real_cause
 test_relaunch_reverifies_an_already_in_flight_item_instead_of_rewriting_it

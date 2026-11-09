@@ -2961,9 +2961,11 @@ test_no_run_herdr_husk_dead_still_reads_gone() {
   FM_FAKE_RUNS_LIST=""
   FM_FAKE_TMUX_MISSING=1
   # The pane exists and answers pane get, but no agent is registered in it,
-  # and the scrollback read fails besides.
+  # its process view is a bare shell, and the scrollback read fails besides.
+  # agent_not_found alone is not a husk: a live Claude can answer it too.
   FM_FAKE_HERDR_READ_FAIL=1
   FM_FAKE_HERDR_HUSK=1
+  FM_FAKE_HERDR_PROCESS=shell
   local out; out=$(run_crew_state "$d" feat-herdr-husk)
   assert_contains "$out" "state: unknown" "a husk pane has no live current state"
   assert_contains "$out" "backend target gone" "a husk pane keeps its gone-class death evidence"

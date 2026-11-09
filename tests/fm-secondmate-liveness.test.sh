@@ -164,7 +164,7 @@ test_herdr_agent_state_preserves_husk_classifier() {
 
   # Pin the session server as running so an installed herdr on the host
   # cannot turn the unknown row into a stopped-server `missing`.
-  for row in 'dead missing' 'no-agent dead' 'live alive' 'unknown unreadable'; do
+  for row in 'dead missing' 'no-agent dead' 'live alive' 'ambiguous ambiguous' 'unknown unreadable'; do
     pane_state=${row%% *}
     expected=${row#* }
     out=$(FM_TEST_PANE_STATE="$pane_state" bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_pane_agent_state() { printf "%s" "$FM_TEST_PANE_STATE"; }; fm_backend_herdr_server_running_state() { printf running; }; fm_backend_herdr_agent_state "sess:p1"' "$ROOT")
@@ -177,7 +177,7 @@ test_herdr_agent_state_preserves_husk_classifier() {
   out=$(bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_pane_agent_state() { printf "no-agent"; }; fm_backend_herdr_agent_alive "sess:p1"' "$ROOT")
   [ "$out" = dead ] || fail "the Herdr compatibility view should keep a no-agent husk dead, got '$out'"
 
-  pass "fm_backend_herdr_agent_state: preserves missing/no-agent/live/unknown husk behavior"
+  pass "fm_backend_herdr_agent_state: preserves missing/no-agent/live/ambiguous/unknown husk behavior"
 }
 
 # --- unit level: the generic dispatchers ------------------------------------

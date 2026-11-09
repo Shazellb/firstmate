@@ -4904,7 +4904,7 @@ herdr_projection_existing_meta_allows_flat() { # <meta>
     # spawn is refused here consistently with the reclaim and presentation
     # gates downstream.
     dead | no-agent) return 0 ;;
-    live | stale-agent | unknown)
+    live | stale-agent | unknown | ambiguous)
       echo "error: existing herdr endpoint for $ID is $old_state; refusing duplicate launch" >&2
       return 1
       ;;
@@ -5489,6 +5489,23 @@ fi
 # WT_TARGET to $T for them (and for any future backend) - the shared treehouse-get +
 # worktree-detection steps below must never reference an unbound WT_TARGET under set -u.
 : "${WT_TARGET:=$T}"
+# Refuse to type shell/launch lines into an endpoint that still runs an agent.
+# Recovery-grade `dead` can lag a live Claude pane on Herdr; this check is the
+# last gate before any send, including a relaunch that already adopted the pane.
+spawn_refuse_launch_into_running_agent() {
+  local state
+  case "$BACKEND" in
+  t3code | orca) return 0 ;;
+  esac
+  [ -n "${T:-}" ] || return 0
+  state=$(fm_backend_agent_state "$BACKEND" "$T" 2>/dev/null) || state=unreadable
+  case "$state" in
+  alive)
+    echo "error: task $ID's endpoint still runs an agent; refusing to type launch lines into it" >&2
+    exit 1
+    ;;
+  esac
+}
 spawn_send_text_line() { # <target> <text>
   case "$BACKEND" in
   tmux) fm_backend_tmux_send_text_line "$1" "$2" ;;
@@ -6229,6 +6246,7 @@ elif [ "$RELAUNCH" -eq 1 ]; then
   # proven instead is that the adopted endpoint's shell is actually sitting in
   # that worktree, so the replacement agent starts where the work is rather
   # than wherever the pane happened to drift.
+  spawn_refuse_launch_into_running_agent
   relaunch_wt_real=$(real_path_or_raw "$WT")
   relaunch_seen=
   for _ in $(seq 1 10); do
@@ -8055,6 +8073,7 @@ else
 # Export GOTMPDIR into the crewmate's pane shell so the agent and every child
 # process (go build, go test, ...) inherit it. Sent before the launch command so
 # the env is set when the agent starts; the brief sleep lets the export land.
+spawn_refuse_launch_into_running_agent
 spawn_send_text_line "$T" "export GOTMPDIR=$TASK_TMP/gotmp"
 # Export the compact-adviser kill switch into the pane shell through the same
 # pre-launch channel, so later commands in that shell inherit it too. The launch

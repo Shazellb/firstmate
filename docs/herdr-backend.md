@@ -825,9 +825,10 @@ That check reuses the `status` read Firstmate already makes, which reports the s
 
 Stopping and restarting a named Herdr server preserves workspace, tab, pane, and label ids.
 The underlying harness processes and live agent registrations do not survive.
-A restored same-labeled tab with a missing pane or no registered agent is a husk.
+A restored same-labeled tab with a missing pane, or a proven shell with no live harness, is a husk.
+`agent get` returning `agent_not_found` is not enough: Claude on Herdr 0.9.5 can answer that while `pane list` still carries `agent_session` `{agent: claude, source: herdr:claude}` and the TUI is idle.
 
-Create replaces only a confidently dead or no-agent husk, creates the replacement before closing the old tab, and refuses live or unknown states.
+Create replaces only a confidently dead or no-agent husk, creates the replacement before closing the old tab, and refuses live, unknown, or ambiguous states.
 This prevents closing the workspace's last tab before a replacement exists.
 
 ### Stale agent registrations
@@ -868,9 +869,10 @@ The generic Herdr agent-liveness probe reuses that pane classifier, then applies
 | Pane read | Probe verdict |
 | --- | --- |
 | A structurally gone pane, or a pane read from a session positively reported as having no running server | `missing` |
-| A restored agent-less shell, or a stale registration over a shell-only pane | `dead` |
-| A registered agent with a live process | `alive` |
-| Every other unexpected read | `unreadable` |
+| A proven shell with no live harness, or a stale registration over a shell-only pane | `dead` |
+| A registered agent with a live process, a process-level harness, or a pane-list `agent_session` claim of a verified harness whose process view is not a proven shell | `alive` |
+| A present pane that cannot be attributed either way | `ambiguous` |
+| Every other unexpected or failed read | `unreadable` |
 
 Neither the stopped-server exception nor the stale-registration verdict widens husk detection or any close authority.
 Those paths still refuse an unreadable pane.

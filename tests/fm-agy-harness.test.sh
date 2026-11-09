@@ -311,20 +311,33 @@ test_herdr_shell_first_with_live_registry_stays_live() {
 }
 
 test_herdr_lone_unregistered_pane_is_agent_free() {
-  local dir out
+  local dir out sleep_bin shell_pid
+  sleep_bin=$(command -v sleep) || fail "sleep not found"
+  "$sleep_bin" 300 &
+  shell_pid=$!
   dir="$TMP_ROOT/herdr-gone"; mkdir -p "$dir"
   printf '%s\n' '{"error":{"code":"agent_not_found","message":"agent target w9:p1 not found"}}' > "$dir/agent-get.json"
+  agy_herdr_process_info_body "$shell_pid" bash > "$dir/process-info.json"
   out=$(agy_herdr_agent_state "$dir")
-  [ "$out" = no-agent ] || fail "an unregistered pane must read no-agent, got '$out'"
-  out=$(AGY_FIX_RESP="$dir/agent-get.json" AGY_FIX_LOG="$dir/calls.log" bash -c '
+  kill "$shell_pid" 2>/dev/null || true
+  [ "$out" = no-agent ] || fail "an unregistered shell-only pane must read no-agent, got '$out'"
+  sleep 30 &
+  shell_pid=$!
+  agy_herdr_process_info_body "$shell_pid" bash > "$dir/process-info.json"
+  out=$(AGY_FIX_RESP="$dir/agent-get.json" AGY_FIX_PROC="$dir/process-info.json" AGY_FIX_LOG="$dir/calls.log" bash -c '
     . "$0/bin/backends/herdr.sh"
     fm_backend_herdr_pane_presence_state() { printf "present"; }
     fm_backend_herdr_cli() {
-      case "$*" in *"agent get"*) cat "$AGY_FIX_RESP" ;; *) exit 0 ;; esac
+      case "$*" in
+        *"agent get"*) cat "$AGY_FIX_RESP" ;;
+        *"pane process-info"*) cat "$AGY_FIX_PROC" ;;
+        *) exit 0 ;;
+      esac
     }
     fm_backend_herdr_tab_is_husk testsession w9:p1 && printf husk || printf refused' "$ROOT" 2>&1)
-  [ "$out" = husk ] || fail "an agent-free pane must allow husk replacement, got '$out'"
-  pass "herdr exit detection: only a positively unregistered pane is agent-free"
+  kill "$shell_pid" 2>/dev/null || true
+  [ "$out" = husk ] || fail "an agent-free shell-only pane must allow husk replacement, got '$out'"
+  pass "herdr exit detection: only a positively unregistered shell-only pane is agent-free"
 }
 
 test_herdr_malformed_and_failed_reads_stay_unknown() {
