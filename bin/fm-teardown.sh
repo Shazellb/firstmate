@@ -203,7 +203,9 @@
 # leftovers included) and its delivery confirmation is removed so retired mates
 # cannot leave durable reply expectations behind. Non-forced retirement refuses
 # while any of those records is still unresolved. Teardown then discards child
-# work, kills child runtime endpoints, and removes the retired home. Removing a
+# work, kills child runtime endpoints, and removes the retired home. Local-only
+# project symlinks in that home are unlinked without resolving them so the
+# registered folder survives. Removing a
 # leased home releases its durable treehouse lease so the pool slot is freed,
 # never left leased forever. If the treehouse return fails, teardown leaves the
 # leased home and state in place instead of hiding a still-held lease.
@@ -2946,12 +2948,28 @@ t3code_secondmate_home_shutdown_barrier() {  # <home> <task-id>
   reap_task_worktree_processes "secondmate home" "$1"
 }
 
+# Unlink local-only project attachments without resolving them. POSIX rm -rf of
+# the home should not follow a leaf symlink, but a trailing-slash or resolve-
+# then-remove path would delete the captain's registered folder. Call this
+# before treehouse return or raw home removal.
+unlink_secondmate_project_symlinks() {
+  local home=$1 projects_dir project_path
+  projects_dir="$home/projects"
+  [ -d "$projects_dir" ] || return 0
+  [ ! -L "$projects_dir" ] || return 0
+  for project_path in "$projects_dir"/* "$projects_dir"/.[!.]* "$projects_dir"/..?*; do
+    [ -L "$project_path" ] || continue
+    rm -f -- "$project_path"
+  done
+}
+
 remove_firstmate_home() {  # <home> <label> <task-id> <backend>
   local home=$1 label=$2 expected_id=${3:-} backend=${4:-} abs_home_path process_event_backup
   [ -n "$home" ] || return 0
   [ -e "$home" ] || return 0
   abs_home_path=$(validate_firstmate_home_for_removal "$home" "$label" "$expected_id") || return 1
   [ -n "$abs_home_path" ] || return 0
+  unlink_secondmate_project_symlinks "$abs_home_path"
   # A T3 secondmate's home carries the environment its spawn wrote there.
   # Remove it after home validation and before returning its pooled Git index.
   if [ "$backend" = t3code ]; then

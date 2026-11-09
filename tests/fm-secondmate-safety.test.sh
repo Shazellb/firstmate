@@ -929,27 +929,117 @@ test_home_seed_refuses_missing_projects_without_signal() {
   pass "home seeding fails loudly on accidental project omission and rejects mixed --no-projects"
 }
 
-test_home_seed_refuses_local_only_project() {
-  local home subhome err
+test_home_seed_attaches_local_only_as_symlink() {
+  local home subhome subhome_abs src_abs dst out current
   home="$TMP_ROOT/local-only-seed-home"
   subhome="$TMP_ROOT/local-only-seed-subhome"
-  err="$TMP_ROOT/local-only-seed.err"
   mkdir -p "$home/projects" "$home/data" "$home/state"
   fm_git_init_commit "$home/projects/alpha"
+  printf 'sentinel\n' > "$home/projects/alpha/SENTINEL"
   printf '%s\n' '- alpha [local-only] - alpha project (added 2026-06-22)' > "$home/data/projects.md"
+  scaffold_secondmate_charter "$home" design 'design for alpha' alpha || fail "charter scaffold failed for local-only seed"
 
-  if FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" design "$subhome" alpha >/dev/null 2>"$err"; then
-    fail "seed allowed a local-only project into a secondmate home"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" design "$subhome" alpha)
+  subhome_abs=$(cd "$subhome" && pwd -P)
+  src_abs=$(cd "$home/projects/alpha" && pwd -P)
+  dst="$subhome_abs/projects/alpha"
+  printf '%s\n' "$out" | grep -F "home=$subhome_abs" >/dev/null || fail "local-only seed did not report the subhome"
+  [ -L "$dst" ] || fail "local-only seed did not attach alpha as a symlink"
+  current=$(cd "$dst" && pwd -P)
+  [ "$current" = "$src_abs" ] || fail "local-only symlink did not resolve to the registered folder"
+  [ -f "$dst/SENTINEL" ] || fail "local-only symlink does not reach the registered folder"
+  grep -F -- '- alpha [local-only]' "$subhome/data/projects.md" >/dev/null \
+    || fail "local-only seed did not copy the registered posture into the secondmate home"
+
+  FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" design "$subhome" alpha >/dev/null \
+    || fail "idempotent reseed of a matching local-only symlink failed"
+  [ -L "$dst" ] || fail "reseed replaced the local-only symlink"
+  [ -f "$home/projects/alpha/SENTINEL" ] || fail "reseed disturbed the registered folder"
+  pass "home seeding attaches local-only projects as a symlink to the registered folder"
+}
+
+test_home_seed_mixed_list_clones_remote_backed_and_symlinks_local_only() {
+  local home subhome subhome_abs src_abs origin
+  home="$TMP_ROOT/mixed-seed-home"
+  subhome="$TMP_ROOT/mixed-seed-subhome"
+  mkdir -p "$home/projects" "$home/data" "$home/state" "$TMP_ROOT/remotes"
+  fm_git_init_commit "$home/projects/alpha"
+  fm_git_init_commit "$home/projects/beta"
+  printf 'sentinel\n' > "$home/projects/alpha/SENTINEL"
+  fm_git_add_origin "$home/projects/beta" "$TMP_ROOT/remotes/mixed-beta.git"
+  cat > "$home/data/projects.md" <<EOF
+- alpha [local-only] - alpha project (added 2026-06-22)
+- beta [direct-PR] - beta project (added 2026-06-22)
+EOF
+  scaffold_secondmate_charter "$home" design 'mixed domain' alpha beta || fail "charter scaffold failed for mixed seed"
+
+  FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" design "$subhome" alpha beta >/dev/null \
+    || fail "mixed seed failed"
+  subhome_abs=$(cd "$subhome" && pwd -P)
+  src_abs=$(cd "$home/projects/alpha" && pwd -P)
+  [ -L "$subhome_abs/projects/alpha" ] || fail "mixed seed did not symlink the local-only project"
+  [ "$(cd "$subhome_abs/projects/alpha" && pwd -P)" = "$src_abs" ] \
+    || fail "mixed seed local-only symlink did not resolve to the registered folder"
+  [ -d "$subhome_abs/projects/beta/.git" ] || fail "mixed seed did not clone the remote-backed project"
+  [ ! -L "$subhome_abs/projects/beta" ] || fail "mixed seed symlinked a remote-backed project"
+  origin=$(git -C "$home/projects/beta" remote get-url origin)
+  [ "$(git -C "$subhome_abs/projects/beta" remote get-url origin)" = "$origin" ] \
+    || fail "mixed seed cloned beta from the wrong origin"
+  pass "home seeding mixes a local-only symlink with a remote-backed clone"
+}
+
+test_home_seed_rolls_back_local_only_symlink_without_deleting_registered_folder() {
+  local home subhome err missing_remote
+  home="$TMP_ROOT/local-only-rollback-home"
+  subhome="$TMP_ROOT/local-only-rollback-subhome"
+  err="$TMP_ROOT/local-only-rollback.err"
+  missing_remote="$TMP_ROOT/remotes/missing-local-only-beta.git"
+  mkdir -p "$home/projects" "$home/data" "$home/state"
+  fm_git_init_commit "$home/projects/alpha"
+  fm_git_init_commit "$home/projects/beta"
+  printf 'sentinel\n' > "$home/projects/alpha/SENTINEL"
+  git -C "$home/projects/beta" remote add origin "file://$missing_remote"
+  cat > "$home/data/projects.md" <<EOF
+- alpha [local-only] - alpha project (added 2026-06-22)
+- beta [direct-PR] - beta project (added 2026-06-22)
+EOF
+  scaffold_secondmate_charter "$home" rollback 'rollback scope' alpha beta || fail "charter scaffold failed for local-only rollback"
+
+  if FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" rollback "$subhome" alpha beta >/dev/null 2>"$err"; then
+    fail "seed succeeded even though the remote-backed clone failed after attaching local-only"
   fi
-  grep -F 'project alpha is local-only; secondmate routes support only no-mistakes and direct-PR projects' "$err" >/dev/null \
-    || fail "seed did not explain local-only project rejection"
-  [ ! -e "$subhome" ] || fail "seed created a subhome before rejecting a local-only project"
-  pass "home seeding refuses local-only projects"
+  [ ! -e "$subhome" ] || fail "failed mixed seed left the newly created secondmate home behind"
+  [ -f "$home/projects/alpha/SENTINEL" ] || fail "failed seed deleted the registered local-only folder"
+  git -C "$home/projects/alpha" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    || fail "failed seed destroyed the registered local-only git repo"
+  pass "home seeding unlinks a local-only symlink on rollback without deleting the registered folder"
+}
+
+test_home_seed_refuses_local_only_project_remotely() {
+  local home err
+  home="$TMP_ROOT/remote-local-only-seed-home"
+  err="$TMP_ROOT/remote-local-only-seed.err"
+  mkdir -p "$home/projects" "$home/data" "$home/state"
+  fm_git_init_commit "$home/projects/delta"
+  printf '%s\n' '- delta [local-only] - delta project (added 2026-08-06)' > "$home/data/projects.md"
+  scaffold_secondmate_charter "$home" seed-localonly 'local only' delta || fail "charter scaffold failed for remote local-only seed"
+
+  if FM_HOME="$home" "$ROOT/bin/fm-remote-home-seed.sh" seed-localonly remote-mac \
+    "$TMP_ROOT/remote-local-only-root" "$TMP_ROOT/remote-local-only-home" delta >/dev/null 2>"$err"; then
+    fail "remote seed allowed a local-only project"
+  fi
+  grep -F 'project delta is local-only and cannot be provisioned remotely' "$err" >/dev/null \
+    || fail "remote seed did not explain the local-only refusal"
+  [ ! -e "$TMP_ROOT/remote-local-only-home" ] || fail "remote local-only seed created a remote home"
+  if [ -f "$home/data/secondmates.md" ] && grep -F -- '- seed-localonly ' "$home/data/secondmates.md" >/dev/null; then
+    fail "remote local-only seed left a registry route"
+  fi
+  pass "remote home seeding still refuses local-only projects"
 }
 
 # A registry entry whose forge token the parser cannot resolve yields no posture
 # at all. Reading that refusal as an empty mode would walk straight past the
-# local-only routing refusal above and clone the project into a secondmate home,
+# local-only attachment above and clone the project into a secondmate home,
 # so the seed must stop instead.
 test_home_seed_refuses_an_unresolvable_registry_posture() {
   local home subhome err
@@ -2009,6 +2099,45 @@ EOF
   [ ! -e "$home/state/domain.meta" ] || fail "teardown did not clear parent meta for plain-clone home"
   grep -F -- '- domain ' "$home/data/secondmates.md" >/dev/null && fail "teardown did not remove plain-clone registry route"
   pass "secondmate teardown raw-removes plain-clone homes, including a leaked read-only strip dir"
+}
+
+test_secondmate_teardown_unlinks_local_only_symlink_without_deleting_registered_folder() {
+  local home subhome subhome_abs fakebin log src
+  home="$TMP_ROOT/local-only-teardown-home"
+  subhome="$TMP_ROOT/local-only-teardown-subhome"
+  src="$home/projects/alpha"
+  mkdir -p "$home/projects" "$home/data" "$home/state"
+  fm_git_init_commit "$src"
+  printf 'sentinel\n' > "$src/SENTINEL"
+  printf '%s\n' '- alpha [local-only] - alpha project (added 2026-06-22)' > "$home/data/projects.md"
+  scaffold_secondmate_charter "$home" domain 'design domain' alpha || fail "charter scaffold failed for local-only teardown"
+  FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" domain "$subhome" alpha >/dev/null \
+    || fail "local-only seed failed before teardown"
+  subhome_abs=$(cd "$subhome" && pwd -P)
+  [ -L "$subhome_abs/projects/alpha" ] || fail "pre-teardown local-only attachment was not a symlink"
+  cat > "$home/state/domain.meta" <<EOF
+window=firstmate:fm-domain
+worktree=$subhome
+project=$subhome
+harness=echo
+kind=secondmate
+mode=secondmate
+yolo=off
+home=$subhome
+projects=alpha
+EOF
+  fakebin=$(make_fake_tmux "$TMP_ROOT/local-only-teardown-fake")
+  log="$TMP_ROOT/local-only-teardown-fake/tmux.log"
+
+  PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" \
+    FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/local-only-teardown-fake/pane.txt" \
+    "$ROOT/bin/fm-teardown.sh" domain >/dev/null 2>/dev/null \
+    || fail "teardown failed for a secondmate with a local-only project symlink"
+  [ ! -d "$subhome" ] || fail "teardown did not remove the secondmate home"
+  [ -f "$src/SENTINEL" ] || fail "teardown deleted the registered local-only folder"
+  git -C "$src" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    || fail "teardown destroyed the registered local-only git repo"
+  pass "secondmate teardown unlinks a local-only symlink without deleting the registered folder"
 }
 
 test_secondmate_force_teardown_discards_child_work() {
@@ -3142,7 +3271,10 @@ test_home_seed_refuses_projectless_home_with_symlinked_projects
 test_home_seed_refuses_projectless_home_with_non_directory_projects
 test_home_seed_refuses_projectless_home_with_uninspectable_registry
 test_home_seed_refuses_missing_projects_without_signal
-test_home_seed_refuses_local_only_project
+test_home_seed_attaches_local_only_as_symlink
+test_home_seed_mixed_list_clones_remote_backed_and_symlinks_local_only
+test_home_seed_rolls_back_local_only_symlink_without_deleting_registered_folder
+test_home_seed_refuses_local_only_project_remotely
 test_home_seed_refuses_an_unresolvable_registry_posture
 test_home_seed_refuses_registry_delimiter_home
 test_home_seed_refuses_active_home_and_root
@@ -3172,6 +3304,7 @@ test_secondmate_force_teardown_sweeps_nested_homes
 test_secondmate_force_teardown_preserves_nested_restore_status
 test_secondmate_teardown_refuses_failed_leased_home_return
 test_secondmate_teardown_removes_plain_clone_home_without_treehouse_return
+test_secondmate_teardown_unlinks_local_only_symlink_without_deleting_registered_folder
 test_secondmate_force_teardown_discards_child_work
 test_secondmate_force_teardown_refuses_duplicated_child_slot
 test_secondmate_force_teardown_preserves_child_on_unproven_lock

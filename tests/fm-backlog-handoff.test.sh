@@ -1368,6 +1368,49 @@ EOF
   pass "a cwd .tasks.toml for another backend does not redirect a markdown handoff"
 }
 
+test_local_handoff_allows_local_only_repo_item() {
+  local home="$TMP_ROOT/local-only-allow-main" sub="$TMP_ROOT/local-only-allow-sub" out
+  setup_homes "$home" "$sub"
+  mkdir -p "$sub/state" "$sub/data"
+  printf '%s\n' '- notes [local-only] - notes project (added 2026-08-06)' > "$home/data/projects.md"
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] notes-task - local notes work (repo: notes)
+
+## Done
+EOF
+  printf '## Queued\n\n## Done\n' > "$sub/data/backlog.md"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-backlog-handoff.sh" design notes-task 2>&1) \
+    || fail "local handoff refused a local-only item: $out"
+  assert_grep 'notes-task' "$sub/data/backlog.md" "local-only item did not reach the local secondmate backlog"
+  assert_no_grep 'notes-task' "$home/data/backlog.md" "local-only item stayed in the main backlog"
+  pass "local backlog handoff allows a local-only repo item"
+}
+
+test_remote_handoff_refuses_local_only_repo_item() {
+  local home="$TMP_ROOT/local-only-remote-main" err before
+  mkdir -p "$home/data" "$home/state"
+  cat > "$home/data/secondmates.md" <<EOF
+- ios - iOS delivery (host: remote-mac; root: $TMP_ROOT/remote-root; home: $TMP_ROOT/remote-home; scope: iOS work; projects: notes; added 2026-08-02)
+EOF
+  printf '%s\n' '- notes [local-only] - notes project (added 2026-08-06)' > "$home/data/projects.md"
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] notes-task - must stay local (repo: notes)
+
+## Done
+EOF
+  before=$(cat "$home/data/backlog.md")
+  if err=$(FM_HOME="$home" "$ROOT/bin/fm-backlog-handoff.sh" ios notes-task 2>&1); then
+    fail "remote handoff accepted a local-only item"
+  fi
+  printf '%s\n' "$err" | grep -F 'project notes is local-only and cannot be provisioned remotely' >/dev/null \
+    || fail "remote handoff did not explain the local-only refusal: $err"
+  [ "$before" = "$(cat "$home/data/backlog.md")" ] || fail "remote local-only refusal mutated the main backlog"
+  [ ! -e "$home/data/handoff/ios.outbox.md" ] || fail "remote local-only refusal staged an outbox"
+  pass "remote backlog handoff refuses a local-only repo item"
+}
+
 test_handoff_wakes_live_local_receiver
 test_cwd_tasks_toml_does_not_redirect_handoff
 test_failed_wake_retries_when_the_item_is_already_present
@@ -1393,5 +1436,7 @@ test_registry_home_with_pre_home_parentheses
 test_registry_home_missing_field_fails_cleanly
 test_handoff_warns_when_a_moved_item_still_owes_a_public_reply
 test_handoff_is_silent_about_public_commitments_without_the_relay
+test_local_handoff_allows_local_only_repo_item
+test_remote_handoff_refuses_local_only_repo_item
 
 echo "ALL TESTS PASSED"
