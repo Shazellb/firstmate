@@ -8,8 +8,8 @@
 # block below for why that dialog is otherwise left for the worker to wedge
 # on rather than answered on the human's behalf.
 #
-# Usage: fm-claude-trust.sh <worktree> <project>
-#        fm-claude-trust.sh --secondmate-home <home> <id>
+# Usage: fm-claude-trust.sh <worktree> <project> [--add-dir <dir>]...
+#        fm-claude-trust.sh --secondmate-home <home> <id> [--add-dir <dir>]...
 #        fm-claude-trust.sh --lab-home <home>
 #   <worktree>  the isolated task worktree this spawn launches into
 #   <project>   the primary checkout that worktree belongs to
@@ -17,7 +17,12 @@
 #   <id>        the secondmate id that home must already be marked for
 #   --lab-home  the disposable lab home bin/fm-live-lab.sh launches a lab
 #               primary in
-# Prints one line naming what it registered; refuses loudly on anything else.
+#   --add-dir   a Firstmate task-channel directory the launch also passes as
+#               Claude --add-dir; repeatable; worktree and secondmate-home
+#               modes only
+# Prints one line naming what it registered for the launch directory, plus
+# one trusted: line per accepted channel directory; refuses loudly on
+# anything else.
 #
 # WHY THIS EXISTS. Claude Code gates a folder it has never seen behind an
 # interactive workspace-trust dialog, and --dangerously-skip-permissions does
@@ -158,13 +163,38 @@
 # trust-only for the same reason as a secondmate home, and bin/fm-live-lab.sh
 # removes the entry again when it tears the lab down.
 #
+# CHANNEL DIRECTORIES. Optional --add-dir paths are the Firstmate task-channel
+# folders a Claude launch also passes as --add-dir. They are not the pane cwd,
+# so the worktree or home registration does not cover them, and Claude Code
+# shows the same workspace-trust dialog for each unseen extra directory
+# ("Is this a directory you created or one you trust?"). The dialog still
+# selects "No, exit" by default; an interactive Yes does not reliably persist
+# across relaunch, so these paths are registered in the same store, trust-only,
+# in the same atomic write as the launch directory. Lab-home mode does not
+# take --add-dir: a lab primary is not a task worker and grants no channel
+# folders. Import-consent flags are never written on a channel entry.
+#
+# The extra-dir scope test is structural, not a path prefix. Each argument
+# must be an absolute, existing directory that is one of the four shapes a
+# Claude spawn grants, and never /, HOME, or the Claude config directory:
+#   <home>/state/operational-inbox
+#   <home>/state/<id>.inbox
+#   <home>/data/<id>
+#   <code-root>/.agents/skills
+# <home> is an operational firstmate home (sibling directories state, data,
+# and config). <code-root> is a firstmate instance (AGENTS.md and bin/). A
+# secondmate launch grants only the parent home's state/<id>.inbox. A relative
+# --add-dir is refused rather than resolved against this process's cwd, the
+# same reason a relative CLAUDE_CONFIG_DIR is refused. A too-wide path such as
+# state/ or data/ itself is not a channel shape and is refused.
+#
 # Only the launching user's own store is written. In worktree mode: the
-# projects entries for the worktree path and the resolved canonical project
-# path in ${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json, which must be a regular
+# projects entries for the worktree path, the resolved canonical project
+# path, and any accepted channel directories, in ${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json, which must be a regular
 # file this uid owns; every unrelated key and project entry is preserved, and
-# both entries land in one atomic replacement. In secondmate-home and lab-home
-# mode: the single projects entry for the registered home path, same store,
-# same atomic replacement. fm-spawn.sh forwards CLAUDE_CONFIG_DIR onto the
+# every accepted entry lands in one atomic replacement. In secondmate-home and lab-home
+# mode: the projects entry for the registered home path plus any accepted
+# channel directories, same store, same atomic replacement. fm-spawn.sh forwards CLAUDE_CONFIG_DIR onto the
 # claude launch verbatim rather than resolving it, and the pane starts in the
 # registered directory, so only an absolute value names the same store on both sides; a
 # relative one is refused below rather than guessed at.
@@ -186,8 +216,8 @@ unset CDPATH \
   GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM GIT_CONFIG_COUNT
 
 usage() {
-  echo "usage: fm-claude-trust.sh <worktree> <project>" >&2
-  echo "       fm-claude-trust.sh --secondmate-home <home> <id>" >&2
+  echo "usage: fm-claude-trust.sh <worktree> <project> [--add-dir <dir>]..." >&2
+  echo "       fm-claude-trust.sh --secondmate-home <home> <id> [--add-dir <dir>]..." >&2
   echo "       fm-claude-trust.sh --lab-home <home>" >&2
   exit 2
 }
@@ -195,14 +225,16 @@ usage() {
 # MODE selects which structural scope test decides the argument, and SCOPE_NOUN
 # names what the argument was expected to be so every shared refusal below reads
 # correctly in both modes.
+ADD_DIRS=()
 case "${1:-}" in
   --secondmate-home)
-    [ "$#" -eq 3 ] || usage
+    [ "$#" -ge 3 ] || usage
     MODE=secondmate-home
     TARGET_ARG=$2
     SUB_ID=$3
     PROJ_ARG=
     SCOPE_NOUN="secondmate home"
+    shift 3
     ;;
   --lab-home)
     [ "$#" -eq 2 ] || usage
@@ -211,19 +243,40 @@ case "${1:-}" in
     SUB_ID=
     PROJ_ARG=
     SCOPE_NOUN="lab home"
+    shift 2
     ;;
   '' | -h | --help)
     usage
     ;;
   *)
-    [ "$#" -eq 2 ] || usage
+    [ "$#" -ge 2 ] || usage
     MODE=worktree
     TARGET_ARG=$1
     SUB_ID=
     PROJ_ARG=$2
     SCOPE_NOUN="task worktree"
+    shift 2
     ;;
 esac
+if [ "$MODE" = lab-home ]; then
+  [ "$#" -eq 0 ] || usage
+else
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --add-dir)
+        [ "$#" -ge 2 ] || usage
+        case "$2" in
+          '' | -*) usage ;;
+        esac
+        ADD_DIRS+=("$2")
+        shift 2
+        ;;
+      *)
+        usage
+        ;;
+    esac
+  done
+fi
 
 refuse() { echo "error: refusing to pre-register Claude trust: $1" >&2; exit 1; }
 
@@ -278,6 +331,7 @@ fi
 # names the real reason instead of the scope verdict behind it.
 [ "$TARGET_REAL" != / ] || refuse "'/' is the filesystem root, not a $SCOPE_NOUN"
 [ "$TARGET_REAL" != "$CONFIG_DIR_REAL" ] || refuse "'$TARGET_REAL' is the Claude config directory, not a $SCOPE_NOUN"
+HOME_REAL=
 if [ -n "${HOME:-}" ]; then
   HOME_REAL=$(real_dir "$HOME") || true
   [ "$TARGET_REAL" != "${HOME_REAL:-}" ] || refuse "'$TARGET_REAL' is the home directory, not a $SCOPE_NOUN"
@@ -379,6 +433,78 @@ else
   done
 fi
 
+# Optional --add-dir channel directories are accepted only after the launch
+# directory itself has passed its mode's scope test, and they land in the same
+# store write. A refusal here leaves the store untouched.
+is_operational_home() {
+  local home=$1
+  [ -d "$home/state" ] && [ -d "$home/data" ] && [ -d "$home/config" ]
+}
+
+accept_channel_dir() {
+  local dir=$1 real parent home base parent_base code_root
+  case "$dir" in
+    /*) ;;
+    *) refuse "channel directory '$dir' is a relative path, so the store key the worker reads cannot be guaranteed to be the one written here; pass an absolute path" ;;
+  esac
+  real=$(real_dir "$dir") || true
+  [ -n "$real" ] || refuse "channel directory '$dir' is not an accessible directory"
+  [ "$real" != / ] || refuse "'/' is the filesystem root, not a task-channel directory"
+  [ "$real" != "$CONFIG_DIR_REAL" ] || refuse "'$real' is the Claude config directory, not a task-channel directory"
+  [ -z "$HOME_REAL" ] || [ "$real" != "$HOME_REAL" ] || refuse "'$real' is the home directory, not a task-channel directory"
+  base=$(basename -- "$real")
+  parent=$(dirname -- "$real")
+  parent_base=$(basename -- "$parent")
+  home=$(dirname -- "$parent")
+  if [ "$base" = operational-inbox ] && [ "$parent_base" = state ] && is_operational_home "$home"; then
+    CHANNEL_DIR_REAL=$real
+    return 0
+  fi
+  case "$base" in
+    *.inbox)
+      if [ "$base" != .inbox ] && [ "$parent_base" = state ] && is_operational_home "$home"; then
+        CHANNEL_DIR_REAL=$real
+        return 0
+      fi
+      ;;
+  esac
+  if [ "$parent_base" = data ] && is_operational_home "$home" && [ -n "$base" ] && [ "$base" != . ] && [ "$base" != .. ]; then
+    CHANNEL_DIR_REAL=$real
+    return 0
+  fi
+  if [ "$base" = skills ] && [ "$parent_base" = .agents ]; then
+    code_root=$(dirname -- "$parent")
+    if [ -f "$code_root/AGENTS.md" ] && [ -d "$code_root/bin" ]; then
+      CHANNEL_DIR_REAL=$real
+      return 0
+    fi
+  fi
+  refuse "channel directory '$real' is not a Firstmate task-channel directory"
+}
+
+ADD_DIRS_REAL=()
+if [ "${#ADD_DIRS[@]}" -gt 0 ]; then
+  for add_dir_arg in "${ADD_DIRS[@]}"; do
+    CHANNEL_DIR_REAL=
+    accept_channel_dir "$add_dir_arg"
+    add_dir_skip=0
+    [ "$CHANNEL_DIR_REAL" = "$TARGET_REAL" ] && add_dir_skip=1
+    if [ "$MODE" = worktree ] && [ "$CHANNEL_DIR_REAL" = "${PROJ_CANON:-}" ]; then
+      add_dir_skip=1
+    fi
+    if [ "$add_dir_skip" -eq 0 ] && [ "${#ADD_DIRS_REAL[@]}" -gt 0 ]; then
+      for add_dir_seen in "${ADD_DIRS_REAL[@]}"; do
+        if [ "$add_dir_seen" = "$CHANNEL_DIR_REAL" ]; then
+          add_dir_skip=1
+          break
+        fi
+      done
+    fi
+    [ "$add_dir_skip" -eq 0 ] || continue
+    ADD_DIRS_REAL+=("$CHANNEL_DIR_REAL")
+  done
+fi
+
 # The store write needs node, and a missing interpreter refuses like every other
 # failure here. Degrading instead would launch a worker straight into the dialog
 # this registration exists to remove, which is the one outcome the whole control
@@ -429,11 +555,12 @@ fi
 # ponytail: fingerprint-and-refuse, not a lock; flock is absent on macOS and
 # cannot stop a vendor session's own rewrite anyway.
 #
-# In worktree mode every flag lands on both the worktree entry and the project
-# entry in the same read-modify-write attempt, so a single rename either
-# records all of it or none of it - there is no state where the worktree entry
-# is fresh and the project entry stale, or the other way round. In
-# secondmate-home mode only the single home entry is written.
+# In worktree mode every flag lands on the worktree entry, the project entry,
+# and any accepted channel-directory entries in the same read-modify-write
+# attempt, so a single rename either records all of it or none of it - there
+# is no state where the worktree entry is fresh and a channel entry stale, or
+# the other way round. In secondmate-home and lab-home mode the home entry
+# plus any accepted channel-directory entries are written the same way.
 #
 # The two external-imports flags (worktree mode only) are gated separately
 # from the trust flag, because they are a CONSENT grant, not a pre-approval
@@ -460,11 +587,14 @@ if [ "$MODE" = worktree ]; then
 else
   WRITE_ARGS=("$STORE" "$MODE" "$TARGET_REAL" "" "$TRUST_FLAG" "$IMPORT_FLAGS")
 fi
+if [ "${#ADD_DIRS_REAL[@]}" -gt 0 ]; then
+  WRITE_ARGS+=("${ADD_DIRS_REAL[@]}")
+fi
 if ! node - "${WRITE_ARGS[@]}" <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
-const [store, mode, target, project, trustFlag, importFlagsJson] = process.argv.slice(2);
+const [store, mode, target, project, trustFlag, importFlagsJson, ...extraDirs] = process.argv.slice(2);
 const importFlags = JSON.parse(importFlagsJson);
 const readStore = () => {
   try {
@@ -540,6 +670,13 @@ const attempt = () => {
     setFlags(projects, target, [trustFlag]);
     keys = [[target, [trustFlag]]];
   }
+  const seen = new Set(keys.map(([key]) => key));
+  for (const extra of extraDirs) {
+    if (!extra || seen.has(extra)) continue;
+    setFlags(projects, extra, [trustFlag]);
+    keys.push([extra, [trustFlag]]);
+    seen.add(extra);
+  }
   // Unpredictable name plus an exclusive create: the config directory may be
   // writable by another local account, and a predictable path could be
   // pre-created there as a symlink that a plain write would follow into some
@@ -591,4 +728,9 @@ fi
 echo "trusted: $TARGET_REAL"
 if [ "$MODE" = worktree ]; then
   echo "trusted (project root): $PROJ_CANON"
+fi
+if [ "${#ADD_DIRS_REAL[@]}" -gt 0 ]; then
+  for add_dir_real in "${ADD_DIRS_REAL[@]}"; do
+    echo "trusted: $add_dir_real"
+  done
 fi

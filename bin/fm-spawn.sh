@@ -682,11 +682,13 @@
 # any per-task state exists, and before its busy hooks are written, every
 # claude launch pre-registers its launch directory -
 # the task worktree, or the secondmate home for a --secondmate spawn -
+# and the Firstmate task-channel directories the launch also passes as --add-dir,
 # in the launching user's own Claude trust store through bin/fm-claude-trust.sh,
 # because Claude's interactive workspace-trust dialog gates a folder it has never
 # seen and firstmate cannot answer it. That helper's header owns the structural
-# scope test for both shapes and every refusal; a failed registration stops this
-# spawn rather than launching a worker that would wedge on the dialog.
+# scope test for both shapes, the channel-directory shapes, and every refusal;
+# a failed registration stops this spawn rather than launching a worker that
+# would wedge on the dialog.
 # polytoken (the captain-approved TUI-pane-plus-REST hybrid) is the one harness
 # whose worker's unattended permission posture cannot ride a launch flag: a
 # per-task config dir is generated under state/ mirroring the operator's global
@@ -4013,9 +4015,13 @@ rovo_config_override_flag() {
 # directory that does not exist at launch would leave the channel created
 # later outside the grant. The grant never covers the whole state/ (watcher
 # internals live there) or anything wider.
-claude_add_dirs_flag() {  # <kind> <state-dir> <data-dir> <code-root> <task-id>
+claude_channel_dirs() {  # <kind> <state-dir> <data-dir> <code-root> <task-id>
+  # Prints one real path per line: the Firstmate channel directories a Claude
+  # launch grants with --add-dir. Creates those dirs so a later grant cannot
+  # name a path that does not exist yet. bin/fm-claude-trust.sh independently
+  # scope-tests the same paths before recording workspace trust for them.
   local kind=$1 state_dir=$2 data_dir=$3 code_root=$4 id=$5
-  local state_real data_real root_real out='' d
+  local state_real data_real root_real
   local dirs=()
   state_real=$(cd "$state_dir" && pwd -P) || return 1
   case "$kind" in
@@ -4031,9 +4037,18 @@ claude_add_dirs_flag() {  # <kind> <state-dir> <data-dir> <code-root> <task-id>
     dirs=("$state_real/operational-inbox" "$state_real/$id.inbox" "$data_real/$id" "$root_real/.agents/skills")
     ;;
   esac
-  for d in "${dirs[@]}"; do
+  printf '%s\n' "${dirs[@]}"
+}
+
+claude_add_dirs_flag() {  # <kind> <state-dir> <data-dir> <code-root> <task-id>
+  local d out='' dirs
+  dirs=$(claude_channel_dirs "$@") || return 1
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
     out="$out--add-dir $(shell_quote "$d") "
-  done
+  done <<EOF
+$dirs
+EOF
   printf '%s' "$out"
 }
 
@@ -6388,13 +6403,16 @@ spawn_assert_agent_worktree
 # skipping the step for that kind left a standalone-clone secondmate home with
 # nothing registered and a pane wedged on a dialog firstmate cannot answer.
 # bin/fm-claude-trust.sh owns the structural scope test for both shapes and
+# for the task-channel directories the launch also passes as --add-dir, and
 # refuses anything that is neither this project's own isolated worktree nor a
-# seeded secondmate home marked for this id; a refusal blocks the spawn rather
-# than launching a worker that would wedge. Refusing here rather than beside the
-# arm keeps this in the same class as the two worktree refusals just above: no
-# temp root, no retired relaunch wiring and no busy record exists yet to strand,
-# so the refusal names the endpoint the same way they do and leaves nothing else
-# behind.
+# seeded secondmate home marked for this id, nor one of those channel shapes;
+# a refusal blocks the spawn rather than launching a worker that would wedge.
+# Channel dirs are created here because they must exist to be registered; they
+# are home operational folders, not per-task busy state. Refusing here rather
+# than beside the arm keeps this in the same class as the two worktree refusals
+# just above: no temp root, no retired relaunch wiring and no busy record exists
+# yet to strand, so the refusal names the endpoint the same way they do and
+# leaves nothing else behind.
 # agy gates a fresh worktree or secondmate home behind its own folder-trust
 # dialog and honours a trustedWorkspaces entry written ahead of launch
 # (bin/fm-agy-trust.sh), so the same pre-registration removes the dialog for it.
@@ -6410,6 +6428,16 @@ claude*)
   else
     spawn_trust_args=("$WT" "$PROJ_ABS")
   fi
+  spawn_channel_dirs=$(claude_channel_dirs "$KIND" "$STATE" "$DATA" "$FM_ROOT" "$ID") || {
+    echo "error: could not resolve the task-channel directories for $ID's claude --add-dir grant" >&2
+    exit 1
+  }
+  while IFS= read -r spawn_channel_dir; do
+    [ -n "$spawn_channel_dir" ] || continue
+    spawn_trust_args+=(--add-dir "$spawn_channel_dir")
+  done <<EOF
+$spawn_channel_dirs
+EOF
   if ! "$FM_ROOT/bin/fm-claude-trust.sh" "${spawn_trust_args[@]}" >/dev/null; then
     echo "error: could not pre-register Claude workspace trust for $WT; refusing to launch a claude worker that would wedge on the trust dialog; $(spawn_endpoint_hint)" >&2
     exit 1

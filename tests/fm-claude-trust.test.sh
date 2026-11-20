@@ -5,7 +5,8 @@
 # each directory a claude launch can start in: a legitimate fresh task worktree
 # and a seeded secondmate home are trusted so the agent reaches its brief or
 # charter with no human, and every out-of-scope path is REFUSED rather than
-# warned about or quietly skipped.
+# warned about or quietly skipped. The same contract covers the task-channel
+# directories a Claude launch also passes as --add-dir.
 set -u
 
 # shellcheck source=tests/fixtures.sh
@@ -144,6 +145,26 @@ seed_secondmate_home() {
 run_home_trust() {
   local config=$1 home=$2 id=$3 user_home=${4:-$1}
   CLAUDE_CONFIG_DIR="$config" HOME="$user_home" "$TRUST" --secondmate-home "$home" "$id" 2>&1
+}
+
+# make_channel_home <home> <id>: operational firstmate-home layout plus the
+# task-channel directories a Claude ship/scout launch grants with --add-dir.
+make_channel_home() {
+  local home=$1 id=$2
+  mkdir -p "$home/state/operational-inbox" "$home/state/$id.inbox/handled" \
+    "$home/data/$id" "$home/config" "$home/projects"
+}
+
+run_trust_extra() {
+  local config=$1 wt=$2 proj=$3 home=$4
+  shift 4
+  CLAUDE_CONFIG_DIR="$config" HOME="$home" "$TRUST" "$wt" "$proj" "$@" 2>&1
+}
+
+run_home_trust_extra() {
+  local config=$1 home=$2 id=$3 user_home=$4
+  shift 4
+  CLAUDE_CONFIG_DIR="$config" HOME="$user_home" "$TRUST" --secondmate-home "$home" "$id" "$@" 2>&1
 }
 
 # spawn_secondmate_claude <case-dir> <home> <id>: run a real --secondmate claude
@@ -658,6 +679,16 @@ test_claude_spawn_pretrusts_its_worktree_and_reaches_the_brief() {
   expect_code 0 $? "the claude spawn must succeed: $out"
   assert_trusted "$config/.claude.json" "$wt" \
     "the claude spawn did not pre-register trust for its worktree"
+  assert_trusted "$config/.claude.json" "$(cd "$home/state/operational-inbox" && pwd -P)" \
+    "the claude spawn did not pre-register trust for operational-inbox"
+  assert_trusted "$config/.claude.json" "$(cd "$home/state/trustspawn.inbox" && pwd -P)" \
+    "the claude spawn did not pre-register trust for the task inbox"
+  assert_trusted "$config/.claude.json" "$(cd "$home/data/trustspawn" && pwd -P)" \
+    "the claude spawn did not pre-register trust for the task data directory"
+  assert_trusted "$config/.claude.json" "$(cd "$ROOT/.agents/skills" && pwd -P)" \
+    "the claude spawn did not pre-register trust for the code-root skills directory"
+  assert_trust_only_no_import_consent "$config/.claude.json" "$(cd "$home/state/operational-inbox" && pwd -P)" \
+    "operational-inbox gained unearned import consent"
   assert_present "$launch_log" "the claude spawn sent no launch command"
   assert_grep 'claude --dangerously-skip-permissions' "$launch_log" \
     "the launch command was not the claude worker launch"
@@ -690,6 +721,8 @@ test_secondmate_standalone_clone_home_is_trusted() {
   expect_code 0 $? "a claude secondmate spawn into a standalone-clone home must succeed: $out"
   assert_trusted "$case_dir/claude-config/.claude.json" "$home" \
     "the claude secondmate spawn did not pre-register trust for its standalone-clone home"
+  assert_trusted "$case_dir/claude-config/.claude.json" "$(cd "$case_dir/primary/state/nomistakes-n1.inbox" && pwd -P)" \
+    "the claude secondmate spawn did not pre-register trust for the parent inbox"
   assert_present "$case_dir/launch.log" "the claude secondmate spawn sent no launch command"
   assert_grep 'claude --dangerously-skip-permissions' "$case_dir/launch.log" \
     "the launch command was not the claude secondmate launch"
@@ -838,6 +871,147 @@ test_secondmate_spawn_fails_closed_when_home_trust_cannot_be_recorded() {
   pass "fm-spawn.sh: a claude secondmate spawn refuses when home trust cannot be recorded"
 }
 
+# Channel --add-dir directories are the other folders a Claude worker launch
+# starts seeing, and they hit the same workspace-trust dialog. Registering the
+# worktree alone left workers wedged on operational-inbox and the task inbox.
+test_channel_dirs_are_trusted_with_the_worktree() {
+  local rec out home op inbox data skills
+  rec=$(make_case channel-ok)
+  read_case "$rec"
+  home="$CASE_DIR/fm-home"
+  make_channel_home "$home" task1
+  op="$(cd "$home/state/operational-inbox" && pwd -P)"
+  inbox="$(cd "$home/state/task1.inbox" && pwd -P)"
+  data="$(cd "$home/data/task1" && pwd -P)"
+  skills="$(cd "$ROOT/.agents/skills" && pwd -P)"
+  out=$(run_trust_extra "$CONFIG" "$WT" "$PROJ" "$CONFIG" \
+    --add-dir "$op" --add-dir "$inbox" --add-dir "$data" --add-dir "$skills")
+  expect_code 0 $? "channel directories must be trusted with the worktree: $out"
+  assert_trusted "$CONFIG/.claude.json" "$WT" "the worktree was not recorded"
+  assert_trusted "$CONFIG/.claude.json" "$op" "operational-inbox was not recorded"
+  assert_trusted "$CONFIG/.claude.json" "$inbox" "the task inbox was not recorded"
+  assert_trusted "$CONFIG/.claude.json" "$data" "the task data directory was not recorded"
+  assert_trusted "$CONFIG/.claude.json" "$skills" "the skills directory was not recorded"
+  assert_trust_only_no_import_consent "$CONFIG/.claude.json" "$op" \
+    "operational-inbox gained unearned import consent"
+  assert_trust_only_no_import_consent "$CONFIG/.claude.json" "$inbox" \
+    "the task inbox gained unearned import consent"
+  assert_contains "$out" "$op" "registration did not report operational-inbox"
+  pass "fm-claude-trust.sh: task-channel directories are trusted with the worktree"
+}
+
+test_channel_dir_repeat_is_idempotent() {
+  local rec out home op count
+  rec=$(make_case channel-idempotent)
+  read_case "$rec"
+  home="$CASE_DIR/fm-home"
+  make_channel_home "$home" task1
+  op="$(cd "$home/state/operational-inbox" && pwd -P)"
+  run_trust_extra "$CONFIG" "$WT" "$PROJ" "$CONFIG" --add-dir "$op" --add-dir "$op" >/dev/null \
+    || fail "first channel registration failed"
+  out=$(run_trust_extra "$CONFIG" "$WT" "$PROJ" "$CONFIG" --add-dir "$op")
+  expect_code 0 $? "a repeat channel registration must succeed: $out"
+  count=$(trusted_paths "$CONFIG/.claude.json" | grep -Fxc "$op")
+  [ "$count" = 1 ] || fail "a repeat channel registration duplicated the entry ($count)"
+  pass "fm-claude-trust.sh: repeat channel registration is idempotent"
+}
+
+test_secondmate_channel_inbox_is_trusted() {
+  local case_dir config home parent inbox out
+  case_dir="$TMP_ROOT/sm-channel"
+  config="$case_dir/claude-config"
+  home="$case_dir/mate"
+  parent="$case_dir/parent"
+  mkdir -p "$config"
+  seed_secondmate_home "$home" mate-n1 clone
+  make_channel_home "$parent" mate-n1
+  inbox="$(cd "$parent/state/mate-n1.inbox" && pwd -P)"
+  out=$(run_home_trust_extra "$config" "$home" mate-n1 "$config" --add-dir "$inbox")
+  expect_code 0 $? "a secondmate parent inbox must be trusted: $out"
+  assert_trusted "$config/.claude.json" "$home" "the secondmate home was not recorded"
+  assert_trusted "$config/.claude.json" "$inbox" "the parent inbox was not recorded"
+  pass "fm-claude-trust.sh: a secondmate parent inbox is trusted"
+}
+
+test_channel_dir_refusals() {
+  local rec out home op store before
+  rec=$(make_case channel-refusals)
+  read_case "$rec"
+  home="$CASE_DIR/fm-home"
+  make_channel_home "$home" task1
+  op="$(cd "$home/state/operational-inbox" && pwd -P)"
+  store="$CONFIG/.claude.json"
+
+  out=$(run_trust_extra "$CONFIG" "$WT" "$PROJ" "$CONFIG" --add-dir relative/operational-inbox)
+  expect_code 1 $? "a relative channel directory must be refused: $out"
+  assert_contains "$out" "relative" "the refusal did not name the relative path"
+  assert_not_trusted "$store" "$WT" "the worktree was trusted despite a refused channel directory"
+
+  out=$(run_trust_extra "$CONFIG" "$WT" "$PROJ" "$CONFIG" --add-dir "$CASE_DIR/missing-channel")
+  expect_code 1 $? "a missing channel directory must be refused: $out"
+  assert_contains "$out" "not an accessible directory" "the refusal did not name the missing channel directory"
+
+  mkdir -p "$CASE_DIR/plain-channel"
+  out=$(run_trust_extra "$CONFIG" "$WT" "$PROJ" "$CONFIG" --add-dir "$CASE_DIR/plain-channel")
+  expect_code 1 $? "a plain directory must be refused as a channel: $out"
+  assert_contains "$out" "not a Firstmate task-channel directory" "the refusal did not name the channel-shape failure"
+
+  out=$(run_trust_extra "$CONFIG" "$WT" "$PROJ" "$CONFIG" --add-dir "$home/state")
+  expect_code 1 $? "state/ itself must be refused as too wide: $out"
+  assert_contains "$out" "not a Firstmate task-channel directory" "the refusal did not reject state/ itself"
+
+  out=$(run_trust_extra "$CONFIG" "$WT" "$PROJ" "$CONFIG" --add-dir "$home/data")
+  expect_code 1 $? "data/ itself must be refused as too wide: $out"
+  assert_contains "$out" "not a Firstmate task-channel directory" "the refusal did not reject data/ itself"
+
+  printf '%s\n' 'not-a-dir' > "$CASE_DIR/channel-file"
+  out=$(run_trust_extra "$CONFIG" "$WT" "$PROJ" "$CONFIG" --add-dir "$CASE_DIR/channel-file")
+  expect_code 1 $? "a file must be refused as a channel directory: $out"
+  assert_contains "$out" "not an accessible directory" "the refusal did not name the non-directory"
+
+  mkdir -p "$CASE_DIR/decoy/state/operational-inbox" "$CASE_DIR/decoy/data"
+  out=$(run_trust_extra "$CONFIG" "$WT" "$PROJ" "$CONFIG" --add-dir "$CASE_DIR/decoy/state/operational-inbox")
+  expect_code 1 $? "operational-inbox outside an operational home must be refused: $out"
+  assert_contains "$out" "not a Firstmate task-channel directory" "the refusal did not reject an unhomed operational-inbox"
+
+  out=$(run_trust_extra "$CONFIG" "$WT" "$PROJ" "$CONFIG" --add-dir /)
+  expect_code 1 $? "the filesystem root must be refused as a channel: $out"
+  assert_contains "$out" "filesystem root" "the refusal did not name the filesystem root"
+
+  out=$(run_trust_extra "$CONFIG" "$WT" "$PROJ" "$CONFIG" --add-dir "$CONFIG")
+  expect_code 1 $? "the Claude config directory must be refused as a channel: $out"
+  assert_contains "$out" "config directory" "the refusal did not name the config directory"
+
+  out=$(run_trust_extra "$CONFIG" "$WT" "$PROJ" "$home" --add-dir "$home")
+  expect_code 1 $? "HOME must be refused as a channel: $out"
+  assert_contains "$out" "home directory" "the refusal did not name the home directory"
+
+  # A refused extra directory must not write the worktree entry either.
+  [ ! -e "$store" ] || fail "a refused channel registration wrote a store"
+
+  # Happy-path leftover: a valid extra after a prior refusal still works, and
+  # an explicit decline on the project still blocks channel writes too.
+  cat > "$store" <<JSON
+{"hasCompletedOnboarding":true,"projects":{"$PROJ":{"hasTrustDialogAccepted":true,"hasClaudeMdExternalIncludesApproved":false,"hasClaudeMdExternalIncludesWarningShown":true}}}
+JSON
+  before=$(cat "$store")
+  out=$(run_trust_extra "$CONFIG" "$WT" "$PROJ" "$CONFIG" --add-dir "$op")
+  expect_code 1 $? "declined import consent must still refuse when channel dirs are present: $out"
+  assert_contains "$out" "declined external CLAUDE.md imports" "the refusal did not name the declined-consent reason"
+  [ "$(cat "$store")" = "$before" ] || fail "the store was modified despite the declined-consent refusal"
+  assert_not_trusted "$store" "$op" "operational-inbox was trusted despite declined import consent"
+  pass "fm-claude-trust.sh: out-of-scope channel directories are refused"
+}
+
+test_lab_home_rejects_add_dir() {
+  local rec out
+  rec=$(make_case lab-add-dir)
+  read_case "$rec"
+  out=$(CLAUDE_CONFIG_DIR="$CONFIG" HOME="$CONFIG" "$TRUST" --lab-home "$WT" --add-dir "$WT" 2>&1)
+  expect_code 2 $? "lab-home mode must refuse --add-dir: $out"
+  pass "fm-claude-trust.sh: lab-home mode refuses --add-dir"
+}
+
 test_fresh_worktree_is_trusted
 test_fresh_worktree_also_trusts_the_project_root_without_import_consent
 test_registration_carries_forward_existing_import_consent
@@ -869,3 +1043,8 @@ test_secondmate_leased_worktree_home_is_trusted
 test_secondmate_home_trust_refuses_everything_unseeded
 test_worktree_mode_still_refuses_a_secondmate_home
 test_secondmate_spawn_fails_closed_when_home_trust_cannot_be_recorded
+test_channel_dirs_are_trusted_with_the_worktree
+test_channel_dir_repeat_is_idempotent
+test_secondmate_channel_inbox_is_trusted
+test_channel_dir_refusals
+test_lab_home_rejects_add_dir

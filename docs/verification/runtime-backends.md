@@ -598,6 +598,7 @@ No dialog appeared, the composer was reached, and neither did the machine-scoped
 The lab home was deleted and the test entry was removed from the store and verified absent, with the same point-in-time caveat as the worktree arms above.
 
 `bin/fm-spawn.sh` therefore pre-registers the directory every claude launch starts in through `bin/fm-claude-trust.sh` before launch, and `tests/fm-claude-trust.test.sh` pins both halves of the scope contract for both shapes: a fresh worktree and a seeded secondmate home are trusted, and an out-of-scope path is refused.
+The same tests pin that the task-channel `--add-dir` directories are registered in that store with the same trust flag.
 That automated spawn case runs against a fake claude, so it asserts the store entry and the launch command and nothing more; the live arms above are what establish that the entry actually suppresses the dialog.
 The composer-classification record below observes the same gate from the other side, where an untrusted worktree left Claude, Grok, and Muse unverified because the guard reads a first-launch trust dialog as an unreadable composer.
 
